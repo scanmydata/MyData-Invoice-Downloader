@@ -1,0 +1,21 @@
+# Κλειδί κρυπτογράφησης — ΠΟΤΕ στο git
+.enckey
+
+# Τοπική βάση & κατεβασμένα παραστατικά
+*.db
+*.db-wal
+*.db-shm
+data/
+
+# Python
+__pycache__/
+*.py[oc]
+*.egg-info
+.venv
+.pytest_cache/
+
+# Build artifacts (PyInstaller / Inno Setup)
+build/
+dist/
+wheels/
+*.spec.bak

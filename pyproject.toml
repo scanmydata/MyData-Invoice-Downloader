@@ -1,0 +1,39 @@
+[project]
+name = "timologio-downloader"
+version = "0.1.0"
+description = "Μαζική λήψη παραστατικών myDATA (ΑΑΔΕ) για πολλαπλούς πελάτες"
+readme = "README.md"
+authors = [
+    { name = "scanmydata", email = "scanmydata@hotmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "cryptography>=49.0.0",
+    "requests>=2.34.2",
+    # Τα Windows δεν έχουν βάση ζωνών ώρας: χωρίς αυτό, το ZoneInfo("Europe/Athens")
+    # αποτυγχάνει και το αρχείο καταγραφής γράφει ώρα μηχανήματος αντί για ώρα
+    # Ελλάδας — σιωπηλά λάθος σε όποιον υπολογιστή δεν είναι ρυθμισμένος σωστά.
+    "tzdata>=2025.1",
+]
+
+[project.optional-dependencies]
+gui = [
+    "pyside6>=6.11.1",
+]
+
+[project.scripts]
+timologio = "timologio.cli:main"
+
+
+[build-system]
+requires = ["uv_build>=0.10.11,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "timologio"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pyinstaller>=6.21",
+]

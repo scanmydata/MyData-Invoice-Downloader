@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="frame" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3aa9e0"/>
+      <stop offset="0.45" stop-color="#1f7fc4"/>
+      <stop offset="1" stop-color="#0d2340"/>
+    </linearGradient>
+    <linearGradient id="my" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#45b6ea"/>
+      <stop offset="1" stop-color="#1888cd"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4bb8ea"/>
+      <stop offset="1" stop-color="#1888cd"/>
+    </linearGradient>
+  </defs>
+
+  <!-- πλαίσιο -->
+  <rect x="17" y="17" width="478" height="478" rx="102" ry="102"
+        fill="#ffffff" stroke="url(#frame)" stroke-width="26"/>
+
+  <!-- «my» χειρόγραφο.
+       Σχεδιασμένο ως paths και όχι ως <text>: μια γραμματοσειρά script
+       (π.χ. Segoe Script) μπορεί να λείπει από το μηχάνημα που χτίζει το
+       εικονίδιο, και τότε το λογότυπο θα έβγαινε με άλλη όψη σιωπηλά.
+       Τοπικό σύστημα ~0..168 x 0..150· το group το τοποθετεί και το κλιμακώνει. -->
+  <g transform="translate(110,80) scale(1.40)"
+     fill="none" stroke="url(#my)" stroke-width="19"
+     stroke-linecap="round" stroke-linejoin="round">
+    <!-- m: τρεις καμάρες -->
+    <path d="M2,62 C2,22 12,2 24,2 C36,2 40,20 40,42 L40,62"/>
+    <path d="M40,42 C40,20 49,2 61,2 C73,2 77,20 77,42 L77,62"/>
+    <path d="M77,42 C77,20 86,2 98,2 C110,2 114,20 114,42 L114,62"/>
+    <!-- y: κύπελλο + ουρά που κατεβαίνει -->
+    <path d="M126,2 C126,32 132,58 145,58 C157,58 164,32 168,2"/>
+    <path d="M168,2 C164,64 158,106 148,126 C139,144 126,150 116,143"/>
+  </g>
+
+  <!-- DATA -->
+  <text x="256" y="374" text-anchor="middle"
+        font-family="Arial Black, Arial, Helvetica, sans-serif"
+        font-weight="900" font-size="110" letter-spacing="1"
+        fill="#0d2340">DATA</text>
+
+  <!-- βέλος λήψης· η μύτη του μπαίνει μέσα στο άνοιγμα του δίσκου, οπότε το
+       βέλος σχεδιάζεται ΠΡΙΝ τον δίσκο -->
+  <g>
+    <rect x="240" y="390" width="32" height="26" rx="5" fill="url(#arrow)"/>
+    <path d="M219 412 L256 452 L293 412 Z" fill="url(#arrow)"/>
+    <path d="M166 444 v22 a15 15 0 0 0 15 15 h150 a15 15 0 0 0 15-15 v-22
+             h-30 v10 h-120 v-10 z" fill="#0d2340"/>
+  </g>
+</svg>
