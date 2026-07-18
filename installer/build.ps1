@@ -83,7 +83,10 @@ if (-not $iscc) {
 & $iscc installer\timologio.iss
 if ($LASTEXITCODE -ne 0) { throw "Ο Inno Setup απέτυχε." }
 
-$setup = Get-ChildItem "$root\dist\installer\*.exe" | Select-Object -First 1
+# Ταξινόμηση κατά ώρα και όχι κατά όνομα: παλιότερες εκδόσεις μένουν στον φάκελο
+# και αλφαβητικά προηγούνται, οπότε το μήνυμα ανέφερε το λάθος αρχείο.
+$setup = Get-ChildItem "$root\dist\installer\*.exe" |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
 Write-Host ""
 Write-Host "Έτοιμο: $($setup.FullName)" -ForegroundColor Green
 Write-Host "Μέγεθος: $([math]::Round($setup.Length/1MB,1)) MB"

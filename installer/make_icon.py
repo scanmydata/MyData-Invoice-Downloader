@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import struct
 import sys
 from pathlib import Path
 
@@ -48,6 +49,57 @@ def render(renderer: QSvgRenderer, size: int) -> QImage:
     renderer.render(painter, QRectF(0, 0, size, size))
     painter.end()
     return image
+
+
+def _dib_entry(image: QImage) -> bytes:
+    """Μία εικόνα ICO σε κλασική μορφή DIB (BITMAPINFOHEADER + BGRA + μάσκα).
+
+    Τα μικρά μεγέθη γράφονται ως DIB και όχι ως PNG: το PNG μέσα σε ICO το
+    δέχονται τα Windows από τα Vista και μετά, αλλά αρκετά σημεία του κελύφους
+    (γραμμή εργασιών, Alt-Tab) το αγνοούν σιωπηλά στα μικρά μεγέθη και δείχνουν
+    το γενικό εικονίδιο — ακριβώς το σύμπτωμα «χάθηκε το λογότυπο».
+    """
+    image = image.convertToFormat(QImage.Format.Format_ARGB32)
+    width, height = image.width(), image.height()
+
+    # Το ARGB32 του Qt είναι 0xAARRGGBB σε little-endian, δηλαδή bytes B,G,R,A —
+    # ακριβώς η σειρά που θέλει το DIB. Οι γραμμές γράφονται από κάτω προς τα πάνω.
+    rows = []
+    for y in range(height - 1, -1, -1):
+        rows.append(bytes(image.constScanLine(y))[: width * 4])
+    xor = b"".join(rows)
+
+    # Μάσκα διαφάνειας 1bpp, με γραμμές στοιχισμένες σε 4 bytes. Μένει μηδενική:
+    # η διαφάνεια δίνεται από το κανάλι άλφα του 32bit XOR.
+    mask_row = ((width + 31) // 32) * 4
+    and_mask = b"\x00" * (mask_row * height)
+
+    header = struct.pack(
+        "<IiiHHIIiiII",
+        40, width, height * 2, 1, 32, 0, len(xor) + len(and_mask), 0, 0, 0, 0,
+    )
+    return header + xor + and_mask
+
+
+def write_ico(images: list[QImage], path: Path) -> None:
+    """Γράφει ICO με όλα τα μεγέθη — το Qt γράφει μόνο ένα."""
+    payloads = [_dib_entry(image) for image in images]
+
+    offset = 6 + 16 * len(images)
+    directory = b""
+    for image, payload in zip(images, payloads):
+        size = image.width()
+        directory += struct.pack(
+            "<BBBBHHII",
+            0 if size >= 256 else size,
+            0 if size >= 256 else size,
+            0, 0, 1, 32, len(payload), offset,
+        )
+        offset += len(payload)
+
+    path.write_bytes(
+        struct.pack("<HHH", 0, 1, len(images)) + directory + b"".join(payloads)
+    )
 
 
 def wizard_bmp(
@@ -81,12 +133,9 @@ def main() -> int:
         print("Το logo.svg δεν είναι έγκυρο SVG", file=sys.stderr)
         return 1
 
-    # Το ICO γράφεται από τη μεγαλύτερη εικόνα· το Qt παράγει τα υπόλοιπα
-    # μεγέθη, αλλά τα φτιάχνουμε ρητά για καθαρότερο rendering στα μικρά.
-    biggest = render(renderer, 256)
-    if not biggest.save(str(ICO), "ICO"):
-        print("Αποτυχία εγγραφής ICO", file=sys.stderr)
-        return 1
+    # Κάθε μέγεθος ζωγραφίζεται ξεχωριστά από το SVG: μια υποβάθμιση του 256
+    # στα 16 pixel μετατρέπει το λογότυπο σε θολή κηλίδα.
+    write_ico([render(renderer, size) for size in SIZES], ICO)
     render(renderer, 512).save(str(PNG), "PNG")
 
     # Κεφαλίδα οδηγού: λευκό φόντο, όσο πιο κοντά στο θέμα «modern» του Inno.

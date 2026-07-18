@@ -17,7 +17,7 @@ from . import i18n
 #: από τον host (python.exe) και δείχνουν ΤΟ ΔΙΚΟ ΤΟΥ εικονίδιο στη γραμμή
 #: εργασιών — γι' αυτό το λογότυπο «δεν εμφανιζόταν». Δηλώνοντας δική μας
 #: ταυτότητα, τα Windows χρησιμοποιούν το εικονίδιο του παραθύρου παντού.
-_APP_ID = "scanmydata.TimologioDownloader.gui.0.1.0"
+_APP_ID = "scanmydata.TimologioDownloader"
 
 
 def _set_app_user_model_id() -> None:
@@ -47,9 +47,21 @@ def main(argv: list[str] | None = None) -> int:
     app._greek = i18n.install(app)  # noqa: SLF001
     icon = app_icon()
     app.setWindowIcon(icon)
+    # Με το tray, το παράθυρο μπορεί να είναι κρυμμένο ενώ η εφαρμογή δουλεύει.
+    # Χωρίς αυτό, το πρώτο hide() θα τερμάτιζε τη διεργασία. Ο πραγματικός
+    # τερματισμός γίνεται ρητά από το MainWindow.closeEvent.
+    app.setQuitOnLastWindowClosed(False)
 
     # Το import γίνεται εδώ ώστε το QApplication να υπάρχει πριν από widgets.
+    from ..config import load_settings
     from .main_window import MainWindow
+    from .unlock import ask_unlock
+
+    # Πριν από οτιδήποτε άλλο: αν ο φάκελος δεδομένων είναι προστατευμένος, το
+    # κλειδί πρέπει να ξεκλειδωθεί εδώ. Το MainWindow φτιάχνει Crypto στον
+    # constructor του και θα έσκαγε με KeyfileLocked.
+    if not ask_unlock(load_settings().enckey_path):
+        return 1
 
     window = MainWindow()
     # Ρητά και στο παράθυρο (όχι μόνο global): η γραμμή τίτλου και το alt-tab

@@ -1,6 +1,6 @@
 [project]
 name = "timologio-downloader"
-version = "0.1.0"
+version = "0.2.0"
 description = "Μαζική λήψη παραστατικών myDATA (ΑΑΔΕ) για πολλαπλούς πελάτες"
 readme = "README.md"
 authors = [

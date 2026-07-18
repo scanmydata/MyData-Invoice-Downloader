@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..config import APP_VERSION
 from .icons import icon, logo_pixmap
 from .theme import CURRENT
 from .widgets import ToggleSwitch
@@ -31,6 +32,8 @@ _ICONS = {
     "sync": "download",
     "documents": "pdf",
     "logfile": "csv",
+    "password": "lock",
+    "control": "network",
 }
 
 
@@ -128,12 +131,20 @@ class SideMenu(QWidget):
         layout.addSpacing(10)
         layout.addWidget(self._separator("ΑΣΦΑΛΕΙΑ"))
         for name, text, tip in [
-            ("backup", "Αντίγραφο τώρα", "Αντίγραφο ασφαλείας της βάσης αυτή τη στιγμή"),
+            ("backup", "Αντίγραφο ασφαλείας",
+             "Αντίγραφο ασφαλείας της βάσης αυτή τη στιγμή"),
             ("restore", "Επαναφορά", "Επαναφορά της βάσης από αντίγραφο ασφαλείας"),
+            ("password", "Κύριος κωδικός",
+             "Προστασία του φακέλου δεδομένων με κωδικό"),
             ("wipe", "Εκκαθάριση",
              "Διαγραφή ληφθέντων παραστατικών και αρχείων — οι πελάτες μένουν"),
         ]:
             self._add(layout, name, text, tip)
+
+        layout.addSpacing(10)
+        layout.addWidget(self._separator("ΣΥΣΤΗΜΑ"))
+        self._add(layout, "control", "Πίνακας ελέγχου",
+                  "Συνδέσεις δικτύου, κατάσταση βάσης και ρυθμίσεις")
 
         layout.addSpacing(10)
         layout.addWidget(self._separator("ΒΟΗΘΕΙΑ"))
@@ -215,7 +226,7 @@ class SideMenu(QWidget):
         self.logo_bottom.setScaledContents(True)
         row.addWidget(self.logo_bottom)
 
-        self.version = QLabel("myDATA · έκδοση 0.1.0")
+        self.version = QLabel(f"myDATA · έκδοση {APP_VERSION}")
         self.version.setObjectName("menuVersion")
         row.addWidget(self.version)
         row.addStretch()

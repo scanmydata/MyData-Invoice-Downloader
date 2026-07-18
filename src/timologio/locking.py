@@ -73,6 +73,15 @@ class SyncLock:
         except (OSError, ValueError):
             return None
 
+    def read_info(self) -> LockInfo | None:
+        """Ποιος κρατά το lock αυτή τη στιγμή — None αν δεν το κρατά κανείς.
+
+        Για εμφάνιση μόνο: ανάμεσα στην ανάγνωση και σε ό,τι κάνει ο καλών, το
+        lock μπορεί να έχει ήδη ελευθερωθεί. Για αποκλεισμό χρησιμοποιήστε το
+        ``acquire()``, που είναι ατομικό.
+        """
+        return self._read() if self._path.exists() else None
+
     def _is_stale(self) -> bool:
         try:
             age = time.time() - self._path.stat().st_mtime

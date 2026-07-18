@@ -11,9 +11,39 @@ from pathlib import Path
 
 from . import repo
 from .config import load_settings
+from . import crypto as crypto_mod
 from .crypto import Crypto, SecretRedactingFilter
 from .db import init_db
 from .models import Client, ClientStatus
+
+
+class Locked(Exception):
+    """Ο φάκελος δεδομένων είναι προστατευμένος και δεν δόθηκε κωδικός."""
+
+
+def _crypto(settings) -> Crypto:
+    """Crypto, ζητώντας τον κύριο κωδικό αν ο φάκελος είναι προστατευμένος.
+
+    Σε scheduled task ή pipeline δεν υπάρχει τερματικό για prompt: εκεί ο
+    κωδικός δίνεται με TIMOLOGIO_MASTER_PASSWORD και το getpass δεν καλείται.
+    """
+    path = settings.enckey_path
+    if not crypto_mod.is_protected(path) or os.environ.get("TIMOLOGIO_MASTER_PASSWORD"):
+        return Crypto(path)
+    if not sys.stdin.isatty():
+        raise Locked(
+            "Ο φάκελος δεδομένων προστατεύεται με κύριο κωδικό. Ορίστε τον στη "
+            "μεταβλητή περιβάλλοντος TIMOLOGIO_MASTER_PASSWORD."
+        )
+    import getpass
+
+    for attempt in range(3):
+        try:
+            crypto_mod.unlock(path, getpass.getpass("Κύριος κωδικός: "))
+            return Crypto(path)
+        except crypto_mod.WrongPassword:
+            print(f"Λάθος κωδικός ({attempt + 1}/3).", file=sys.stderr)
+    raise Locked("Ο κωδικός δεν δόθηκε σωστά.")
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -56,7 +86,7 @@ def _run_sync(args: argparse.Namespace, settings, lock) -> int:
 
     create_backup(settings.db_path, reason="sync")
     conn = init_db(settings.db_path)
-    crypto = Crypto(settings.enckey_path)
+    crypto = _crypto(settings)
 
     date_from = args.date_from or _default_dates()[0]
     date_to = args.date_to or _default_dates()[1]
@@ -120,7 +150,7 @@ def cmd_add_client(args: argparse.Namespace) -> int:
     """Προσωρινό για Φάση 1 — η Φάση 2 φέρνει το Excel import."""
     settings = load_settings()
     conn = init_db(settings.db_path)
-    crypto = Crypto(settings.enckey_path)
+    crypto = _crypto(settings)
 
     user = os.environ.get("AADE_USER", "")
     key = os.environ.get("AADE_KEY", "")
@@ -144,7 +174,7 @@ def cmd_import(args: argparse.Namespace) -> int:
     if not args.dry_run:
         create_backup(settings.db_path, reason="import")
     conn = init_db(settings.db_path)
-    crypto = Crypto(settings.enckey_path)
+    crypto = _crypto(settings)
 
     try:
         preview = build_preview(args.file, conn)
@@ -418,7 +448,11 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
-    return int(args.func(args))
+    try:
+        return int(args.func(args))
+    except Locked as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

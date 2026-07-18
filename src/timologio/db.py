@@ -12,7 +12,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS clients (
@@ -127,6 +127,22 @@ CREATE TABLE IF NOT EXISTS vies_misses (
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+
+-- Ποιοι υπολογιστές χρησιμοποιούν αυτή τη βάση. Δεν υπάρχει διακομιστής να
+-- κρατά συνεδρίες: κάθε instance γράφει τον παλμό του εδώ και «συνδεδεμένος»
+-- σημαίνει «έγραψε πρόσφατα». Κλειδί ανά θέση εργασίας (υπολογιστής+χρήστης)
+-- και όχι ανά διεργασία, ώστε οι επανεκκινήσεις να μη γεμίζουν τον πίνακα.
+CREATE TABLE IF NOT EXISTS peers (
+  id         TEXT PRIMARY KEY,
+  host       TEXT NOT NULL,
+  username   TEXT NOT NULL,
+  role       TEXT NOT NULL DEFAULT 'standalone',
+  version    TEXT NOT NULL DEFAULT '',
+  pid        INTEGER NOT NULL DEFAULT 0,
+  data_dir   TEXT NOT NULL DEFAULT '',
+  first_seen TEXT NOT NULL,
+  last_seen  TEXT NOT NULL
 );
 """
 

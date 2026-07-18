@@ -47,10 +47,18 @@ from PySide6.QtWidgets import (
 
 from PySide6.QtWidgets import QApplication, QCheckBox
 
-from .. import demo, logs, repo
+from .. import demo, logs, presence, repo
 from ..backup import create_backup, list_backups, restore
-from ..config import load_settings
+from ..config import (
+    APP_VERSION,
+    ROLE_LABELS_EL,
+    load_role,
+    load_settings,
+    load_start_minimized,
+    save_start_minimized,
+)
 from ..coverage import to_gr
+from .. import crypto as crypto_mod
 from ..crypto import Crypto
 from ..db import init_db
 from ..download.storage import find_client_folder
@@ -58,6 +66,7 @@ from ..reports import export_documents
 from .analysis_panel import AnalysisPanel
 from .busy import BusyOverlay
 from .client_dialog import ClientDialog
+from .control_panel import ControlPanel
 from .documents_view import DEFAULT_FILTER, DocumentsView, SortableItem
 from .icons import icon, logo_pixmap
 from .import_dialog import ImportDialog
@@ -66,6 +75,8 @@ from .side_menu import SideMenu
 from .sync_page import SyncPage
 from .theme import CURRENT, apply_theme, money, paint_title_bar
 from .tour import Step, Tour
+from .tray import Tray
+from . import unlock
 from .widgets import resort, setup_columns
 from .workers import SyncWorker
 
@@ -93,7 +104,7 @@ _COL_CHECK, _COL_VAT, _COL_LABEL, _COL_STATUS = 0, 1, 2, 3
 _FILTERS = ["Όλοι", "Διαθέσιμοι", "Χωρίς κλειδί API", "Με αχαρακτήριστα"]
 
 #: Η σειρά τους είναι η σειρά τους στο QStackedWidget.
-_PAGES = ("clients", "sync", "documents")
+_PAGES = ("clients", "sync", "documents", "control")
 
 #: Πλάτος του δεξιού panel όταν είναι ανοιχτό. Κάτω από ~400 ο πίνακας
 #: εσόδων/εξόδων κόβεται στα δεξιά.
@@ -111,7 +122,12 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1180, 700)
 
         self.settings = load_settings()
+        self._role = load_role()
         self.log_path = logs.setup(self.settings.data_dir)
+        # Το τερματικό ελέγχει ΠΡΙΝ ανοίξει τη βάση: αν το share δεν απαντά, το
+        # init_db θα έφτιαχνε μια δεύτερη, άδεια βάση σε λάθος μέρος — και ο
+        # χρήστης θα έβλεπε «χάθηκαν οι πελάτες» αντί για «δεν βρίσκω τον server».
+        self._connection_problem = self._check_terminal_connection()
         self.conn = init_db(self.settings.db_path)
         self.crypto = Crypto(self.settings.enckey_path)
         self._prefs = QSettings("scanmydata", "TimologioDownloader")
@@ -142,7 +158,78 @@ class MainWindow(QMainWindow):
             demo.seed(self.conn, self.crypto)
             log.info("Μπήκαν δεδομένα επίδειξης για την πρώτη εκκίνηση")
         self.reload_clients()
+        self._start_presence()
+        self._setup_tray()
         QTimer.singleShot(400, self._maybe_first_run_tour)
+        if self._connection_problem:
+            QTimer.singleShot(200, self._report_connection_problem)
+
+    # -------------------------------------------------------------- δίκτυο
+    def _check_terminal_connection(self) -> presence.Check | None:
+        """Το πρώτο βήμα που απέτυχε, ή None αν όλα καλά.
+
+        Τρέχει μόνο για τερματικά: σε αυτόνομο ή server ο φάκελος είναι τοπικός
+        και ένα αποτυχημένο άνοιγμα είναι πραγματικό σφάλμα, όχι θέμα δικτύου.
+        """
+        if self._role != "terminal":
+            return None
+        health = presence.check_connection(self.settings.data_dir, self.settings.db_path)
+        if health.ok:
+            return None
+        problem = health.first_problem
+        log.warning("Πρόβλημα σύνδεσης τερματικού: %s — %s", problem.name, problem.detail)
+        return problem
+
+    def _report_connection_problem(self) -> None:
+        problem = self._connection_problem
+        if problem is None:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Δεν βρέθηκε ο server")
+        box.setText(f"<b>{problem.name}</b><br>{problem.detail}")
+        box.setInformativeText(
+            "Αυτός ο υπολογιστής είναι ρυθμισμένος ως τερματικό. Ελέγξτε ότι ο "
+            "server είναι ανοιχτός και ο φάκελος κοινόχρηστος, και δοκιμάστε "
+            "ξανά από τον Πίνακα ελέγχου."
+        )
+        open_panel = box.addButton("Πίνακας ελέγχου", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Κλείσιμο", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() == open_panel:
+            self._show_page("control")
+
+    def _start_presence(self) -> None:
+        """Δηλώνει την παρουσία αυτού του υπολογιστή, τώρα και ανά HEARTBEAT."""
+        presence.forget_old(self.conn)
+        self._beat()
+        self._presence_timer = QTimer(self)
+        self._presence_timer.setInterval(presence.HEARTBEAT_SECONDS * 1000)
+        self._presence_timer.timeout.connect(self._beat)
+        self._presence_timer.start()
+
+    def _beat(self) -> None:
+        presence.heartbeat(
+            self.conn,
+            role=self._role,
+            version=APP_VERSION,
+            data_dir=self.settings.data_dir,
+        )
+
+    # ---------------------------------------------------------------- tray
+    def _setup_tray(self) -> None:
+        self.tray = Tray(self, self.windowIcon(), ROLE_LABELS_EL.get(self._role, ""))
+        self.tray.show()
+        self._really_quit = False
+        self._tray_notified = False
+        if load_start_minimized():
+            # Το hide() πρέπει να γίνει αφού το Qt δείξει το παράθυρο, αλλιώς σε
+            # κάποια συστήματα εμφανίζεται μια στιγμή και μετά εξαφανίζεται.
+            QTimer.singleShot(0, self.hide)
+
+    def _on_start_minimized(self, value: bool) -> None:
+        save_start_minimized(value)
+        log.info("Εκκίνηση στο tray: %s", "ναι" if value else "όχι")
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
@@ -179,6 +266,18 @@ class MainWindow(QMainWindow):
         self.docs = DocumentsView(self.settings, self._prefs)
         self.docs.back_requested.connect(lambda: self._show_page("clients"))
         self.stack.addWidget(self.docs)
+
+        self.control = ControlPanel(
+            data_dir=self.settings.data_dir,
+            db_path=self.settings.db_path,
+            role=self._role,
+            version=APP_VERSION,
+            conn=self.conn,
+        )
+        self.control.set_start_minimized(load_start_minimized())
+        self.control.start_minimized_changed.connect(self._on_start_minimized)
+        self.control.reconnect_requested.connect(self.reload_clients)
+        self.stack.addWidget(self.control)
         root.addWidget(self.stack, 1)
 
         root.addWidget(self._progress_strip())
@@ -691,6 +790,8 @@ class MainWindow(QMainWindow):
             "backup": self.on_backup,
             "restore": self.on_restore,
             "wipe": lambda: self.on_wipe(),
+            "password": self.on_password,
+            "control": lambda: self._show_page("control"),
             "tour": self.start_tour,
             "manual": self.on_manual,
             "logfile": self.on_open_log,
@@ -1291,6 +1392,10 @@ class MainWindow(QMainWindow):
             "«Κωδικοί Υπόχρεων» / «Κωδικοί Υπηρεσιών μέσω Internet» της ΑΑΔΕ."
             "<br><br>Η ξενάγηση είναι πάντα διαθέσιμη από το μενού.",
         )
+        # Τα δικά του δεδομένα είναι πραγματικά διαπιστευτήρια πελατών: η στιγμή
+        # να προταθεί προστασία είναι εδώ, πριν μπει το πρώτο ΑΦΜ, όχι αφού
+        # γεμίσει η βάση.
+        unlock.offer(self.settings.enckey_path, self)
         self.on_add_client()
 
     def _maybe_first_run_tour(self) -> None:
@@ -1303,6 +1408,15 @@ class MainWindow(QMainWindow):
             return
         self._prefs.setValue("tour_seen", True)
         self.start_tour()
+
+    def on_password(self) -> None:
+        was = crypto_mod.is_protected(self.settings.enckey_path)
+        unlock.manage(self.settings.enckey_path, self)
+        now = crypto_mod.is_protected(self.settings.enckey_path)
+        if was != now:
+            self._log(
+                "Ενεργοποιήθηκε κύριος κωδικός" if now else "Αφαιρέθηκε ο κύριος κωδικός"
+            )
 
     def on_backup(self) -> None:
         path = create_backup(self.settings.db_path, reason="manual")
@@ -1459,12 +1573,28 @@ class MainWindow(QMainWindow):
             )
 
     def closeEvent(self, event) -> None:
+        # Με ενεργό το tray, το ✕ μαζεύει αντί να κλείνει: στον server ένα
+        # κατά λάθος κλείσιμο αφήνει τα τερματικά χωρίς φάκελο. Η έξοδος
+        # γίνεται ρητά, από το μενού του εικονιδίου.
+        if getattr(self, "tray", None) and not self._really_quit and load_start_minimized():
+            event.ignore()
+            self.hide()
+            if not self._tray_notified:
+                self.tray.notify_minimized()
+                self._tray_notified = True
+            return
+
         if self._worker:
             self._worker.cancel()
             self._teardown()
         log.info("── Τερματισμός εφαρμογής")
+        if getattr(self, "tray", None):
+            self.tray.hide()
         self.conn.close()
         super().closeEvent(event)
+        # Το quitOnLastWindowClosed είναι απενεργοποιημένο για χάρη του tray,
+        # οπότε ο τερματισμός πρέπει να ζητηθεί ρητά.
+        QApplication.instance().quit()
 
 
 def _safe_name(label: str) -> str:
