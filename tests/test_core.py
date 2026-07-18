@@ -40,13 +40,13 @@ def test_pdf_url_preserves_other_formats() -> None:
 def test_target_path_uses_requested_naming_scheme(tmp_path: Path) -> None:
     """<ΠΡΟΜΗΘΕΥΤΗΣ>_<ΑΦΜ>_<ΗΜ/ΝΙΑ>_<ΣΕΙΡΑ>_<ΑΑ>_<ΑΞΙΑ>"""
     doc = Document(mark="400012146904534", invoice_type="1.1",
-                   issuer_vat="800916954", issuer_name="ΑΦΟΙ ΛΑΓΟΥ ΧΡΩΜΑΤΑ ΟΕ",
-                   counter_vat="802576637", series="ΤΔΑ", aa="1",
+                   issuer_vat="987654324", issuer_name="ΧΡΩΜΑΤΑ ΠΑΡΑΔΕΙΓΜΑ ΟΕ",
+                   counter_vat="123456783", series="ΤΔΑ", aa="1",
                    issue_date="2026-01-02", total_value=40.29)
-    path = target_path(tmp_path, "802576637", doc)
-    assert path.name == "ΑΦΟΙ ΛΑΓΟΥ ΧΡΩΜΑΤΑ ΟΕ_800916954_2026-01-02_ΤΔΑ_1_40,29.pdf"
+    path = target_path(tmp_path, "123456783", doc)
+    assert path.name == "ΧΡΩΜΑΤΑ ΠΑΡΑΔΕΙΓΜΑ ΟΕ_987654324_2026-01-02_ΤΔΑ_1_40,29.pdf"
     assert path.parent.name == "01" and path.parent.parent.name == "2026"
-    assert path.is_relative_to(tmp_path / "802576637")
+    assert path.is_relative_to(tmp_path / "123456783")
 
 
 def test_amount_uses_greek_decimal_comma() -> None:
@@ -64,20 +64,20 @@ def test_target_path_picks_counterparty_for_outgoing(tmp_path: Path) -> None:
     Χωρίς αυτό, κάθε εκδοθέν θα ονομαζόταν με το ΑΦΜ του ίδιου του πελάτη.
     """
     doc = Document(mark="1", invoice_type="1.1",
-                   issuer_vat="802576637", issuer_name="Ο ΠΕΛΑΤΗΣ ΜΑΣ",
-                   counter_vat="094439854", counter_name="ΤΡΑΚΑΔΑΣ Α.Ε.",
+                   issuer_vat="123456783", issuer_name="Ο ΠΕΛΑΤΗΣ ΜΑΣ",
+                   counter_vat="044004008", counter_name="ΠΑΡΑΔΕΙΓΜΑ Α.Ε.",
                    series="Α", aa="7", issue_date="2026-07-01", total_value=10.0)
-    name = target_path(tmp_path, "802576637", doc).name
-    assert name.startswith("ΤΡΑΚΑΔΑΣ Α.Ε._094439854_")
-    assert "802576637" not in name
+    name = target_path(tmp_path, "123456783", doc).name
+    assert name.startswith("ΠΑΡΑΔΕΙΓΜΑ Α.Ε._044004008_")
+    assert "123456783" not in name
 
 
 def test_missing_supplier_name_falls_back_to_vat(tmp_path: Path) -> None:
     """Το myDATA δίνει επωνυμία μόνο στο ~70%. Χωρίς όνομα -> ξεκινά από ΑΦΜ."""
     doc = Document(mark="1", invoice_type="1.1", issuer_vat="094173365",
-                   counter_vat="802576637", series="Β", aa="5",
+                   counter_vat="123456783", series="Β", aa="5",
                    issue_date="2026-07-01", total_value=14.69)
-    name = target_path(tmp_path, "802576637", doc).name
+    name = target_path(tmp_path, "123456783", doc).name
     assert name == "094173365_2026-07-01_Β_5_14,69.pdf"
     assert "ΑΓΝΩΣΤΟΣ" not in name
 
@@ -85,16 +85,16 @@ def test_missing_supplier_name_falls_back_to_vat(tmp_path: Path) -> None:
 def test_long_supplier_name_is_capped_not_path_overflow(tmp_path: Path) -> None:
     doc = Document(mark="1", invoice_type="1.1", issuer_vat="094222211",
                    issuer_name="ΠΛΑΙΣΙΟ COMPUTERS ΑΝΩΝΥΜΗ ΕΜΠΟΡΙΚΗ ΚΑΙ ΒΙΟΜΗΧΑΝΙΚΗ ΕΤΑΙΡΕΙΑ",
-                   counter_vat="802576637", series="ΤΔ137", aa="001689250",
+                   counter_vat="123456783", series="ΤΔ137", aa="001689250",
                    issue_date="2026-01-03", total_value=1234.56)
-    path = target_path(tmp_path, "802576637", doc)
+    path = target_path(tmp_path, "123456783", doc)
     assert len(str(path)) < 260, "δεν πρέπει να ξεπερνά το MAX_PATH"
     assert path.name.endswith("_094222211_2026-01-03_ΤΔ137_001689250_1234,56.pdf")
 
 
 def test_target_path_survives_missing_date(tmp_path: Path) -> None:
     doc = Document(mark="1", invoice_type="1.1", issue_date="")
-    path = target_path(tmp_path, "802576637", doc)
+    path = target_path(tmp_path, "123456783", doc)
     assert path.parent.name == "00" and path.parent.parent.name == "0000"
 
 
@@ -141,16 +141,16 @@ def test_is_complete_pdf_rejects_html_and_stubs(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 
 def test_norm_afm_handles_excel_artifacts() -> None:
-    assert norm_afm("802576637") == "802576637"
-    assert norm_afm("802576637.0") == "802576637"  # Excel float
-    assert norm_afm(" 802576637 ") == "802576637"
+    assert norm_afm("123456783") == "123456783"
+    assert norm_afm("123456783.0") == "123456783"  # Excel float
+    assert norm_afm(" 123456783 ") == "123456783"
     assert norm_afm("75155090") == "075155090"     # χαμένο αρχικό μηδέν
     assert norm_afm("άκυρο") == ""
     assert norm_afm(None) == ""
 
 
 def test_valid_afm_checksum() -> None:
-    assert valid_afm("802576637")
+    assert valid_afm("123456783")
     assert not valid_afm("802576638")
     assert not valid_afm("123")
 
@@ -182,7 +182,7 @@ def test_roundtrip_and_prefix(tmp_path: Path) -> None:
 
 
 def test_plaintext_passthrough(tmp_path: Path) -> None:
-    """crypto.php:50 — τιμή χωρίς prefix επιστρέφεται ως έχει, ώστε η
+    """το παλιότερο εργαλείο — τιμή χωρίς prefix επιστρέφεται ως έχει, ώστε η
     ενεργοποίηση κρυπτογράφησης να μη σπάει υπάρχοντα δεδομένα."""
     c = Crypto(tmp_path / ".enckey")
     assert c.dec("σκέτο κείμενο") == "σκέτο κείμενο"
@@ -212,14 +212,14 @@ INVOICE_XML = """<?xml version="1.0" encoding="utf-8"?>
 <RequestedDoc xmlns="http://www.aade.gr/myDATA/invoice/v1.0">
  <invoicesDoc>
   <invoice>
-   <issuer><vatNumber>094439854</vatNumber><name>ΠΡΟΜΗΘΕΥΤΗΣ ΑΕ</name></issuer>
-   <counterpart><vatNumber>802576637</vatNumber></counterpart>
+   <issuer><vatNumber>044004008</vatNumber><name>ΠΡΟΜΗΘΕΥΤΗΣ ΑΕ</name></issuer>
+   <counterpart><vatNumber>123456783</vatNumber></counterpart>
    <invoiceHeader><series>TDA</series><aa>3949</aa>
      <issueDate>2026-07-15</issueDate><invoiceType>1.1</invoiceType></invoiceHeader>
    <invoiceSummary><totalNetValue>163.25</totalNetValue>
      <totalVatAmount>39.18</totalVatAmount><totalGrossValue>202.43</totalGrossValue></invoiceSummary>
    <mark>400014401148454</mark>
-   <downloadingInvoiceUrl>https://einvoice.impact.gr/p/EL094439854/AAA/BBB</downloadingInvoiceUrl>
+   <downloadingInvoiceUrl>https://einvoice.impact.gr/p/EL044004008/AAA/BBB</downloadingInvoiceUrl>
   </invoice>
   <invoice>
    <issuer><vatNumber>802664834</vatNumber></issuer>
@@ -241,9 +241,9 @@ def test_parse_one_row_per_mark() -> None:
     first = docs[0]
     assert first.mark == "400014401148454"
     assert first.invoice_type == "1.1"
-    assert first.issuer_vat == "094439854"
+    assert first.issuer_vat == "044004008"
     assert first.issuer_name == "ΠΡΟΜΗΘΕΥΤΗΣ ΑΕ"
-    assert first.counter_vat == "802576637"
+    assert first.counter_vat == "123456783"
     assert first.series == "TDA" and first.aa == "3949"
     assert first.total_value == 202.43
     assert first.provider_host == "einvoice.impact.gr"
@@ -287,9 +287,9 @@ def test_extract_cursors_supports_legacy_token() -> None:
 def test_client_repr_never_leaks_credentials() -> None:
     from timologio.models import Client
 
-    c = Client(vat="802576637", label="X", mydata_user="U", mydata_key="k" * 32)
+    c = Client(vat="123456783", label="X", mydata_user="U", mydata_key="k" * 32)
     assert "k" * 32 not in repr(c)
-    assert "U" not in repr(c).replace("802576637", "")
+    assert "U" not in repr(c).replace("123456783", "")
 
 
 def test_mydata_client_refuses_non_aade_host(tmp_path: Path) -> None:

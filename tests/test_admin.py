@@ -23,7 +23,7 @@ from timologio.repo import (
     wipe_documents,
 )
 
-A, B = "802576637", "998702854"
+A, B = "123456783", "555555559"
 
 
 @pytest.fixture
@@ -37,7 +37,7 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
         )
         for mark in ("1", "2"):
             upsert_document(conn, cid, Document(
-                mark=f"{vat}-{mark}", invoice_type="1.1", issuer_vat="094439854",
+                mark=f"{vat}-{mark}", invoice_type="1.1", issuer_vat="044004008",
                 counter_vat=vat, issue_date="2026-07-01",
                 direction=Direction.INCOMING))
         coverage.record(conn, cid, Direction.INCOMING, "01/01/2026", "31/07/2026")

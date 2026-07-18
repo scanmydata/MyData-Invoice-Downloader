@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 
 from PySide6.QtWidgets import QApplication, QCheckBox
 
-from .. import logs, repo
+from .. import demo, logs, repo
 from ..backup import create_backup, list_backups, restore
 from ..config import load_settings
 from ..coverage import to_gr
@@ -135,6 +135,12 @@ class MainWindow(QMainWindow):
         if self._prefs.value("menu_collapsed", False, type=bool):
             self.menu.set_collapsed(True, animate=False)
         self.busy = BusyOverlay(self)
+        # Πρώτη εκκίνηση σε άδεια βάση: φανταστικά δεδομένα, ώστε η ξενάγηση να
+        # έχει τι να δείξει αντί για άδειους πίνακες. Σβήνονται μόλις ο χρήστης
+        # ολοκληρώσει την ξενάγηση (δείτε _on_tour_finished).
+        if demo.should_seed(self.conn):
+            demo.seed(self.conn, self.crypto)
+            log.info("Μπήκαν δεδομένα επίδειξης για την πρώτη εκκίνηση")
         self.reload_clients()
         QTimer.singleShot(400, self._maybe_first_run_tour)
 
@@ -790,6 +796,18 @@ class MainWindow(QMainWindow):
         delete = QAction(icon("delete", CURRENT.bad), label, self)
         delete.triggered.connect(lambda: self.on_delete_clients(selected))
         menu.addAction(delete)
+
+        # Μαζική διαγραφή όσων έχει τσεκάρει ο χρήστης — ο φυσικός τρόπος να
+        # επιλέξει πολλούς. Εμφανίζεται μόνο όταν οι τσεκαρισμένοι είναι άλλοι
+        # από τη γραμμή που δείχνει το δεξί κλικ, ώστε να μην διπλασιάζεται.
+        checked = sorted(self._checked)
+        if checked and set(checked) != set(selected):
+            bulk = QAction(
+                icon("delete", CURRENT.bad),
+                f"Διαγραφή {len(checked)} τσεκαρισμένων πελατών", self,
+            )
+            bulk.triggered.connect(lambda: self.on_delete_clients(checked))
+            menu.addAction(bulk)
         menu.exec(self.table.viewport().mapToGlobal(point))
 
     def on_edit_client(self, vat: str) -> None:
@@ -807,9 +825,12 @@ class MainWindow(QMainWindow):
         self._log(f"Ενημερώθηκε ο πελάτης {vat}")
 
     def _delete_selected(self) -> None:
-        """Το πλήκτρο Delete σβήνει όσους πελάτες είναι φωτισμένοι — έναν ή
-        πολλούς. Χωρίς επιλογή δεν κάνει τίποτα (δεν σβήνει «όλους» κατά λάθος)."""
-        self.on_delete_clients(self._selected_vats(only_ready=False))
+        """Το πλήκτρο Delete σβήνει τους ΤΣΕΚΑΡΙΣΜΕΝΟΥΣ πελάτες — ο φυσικός
+        τρόπος να επιλέξει κανείς πολλούς. Αν κανείς δεν είναι τσεκαρισμένος,
+        σβήνει τους φωτισμένους. Χωρίς καμία επιλογή δεν κάνει τίποτα, ώστε ένα
+        κατά λάθος Delete να μη σβήσει «όλους»."""
+        targets = sorted(self._checked) or self._selected_vats(only_ready=False)
+        self.on_delete_clients(targets)
 
     def on_delete_clients(self, vats: list[str]) -> None:
         if not vats:
@@ -987,6 +1008,19 @@ class MainWindow(QMainWindow):
                     pass
         return removed
 
+    def _drop_demo_if_present(self) -> None:
+        """Τα δείγματα φεύγουν μόλις μπουν αληθινά δεδομένα.
+
+        Χωρίς αυτό, όποιος παρέλειπε την ξενάγηση και έκανε κατευθείαν εισαγωγή
+        θα κατέληγε με τους φανταστικούς πελάτες ανακατεμένους με τους δικούς
+        του — και θα προσπαθούσε να κατεβάσει παραστατικά για ΑΦΜ που δεν
+        υπάρχουν.
+        """
+        if not demo.has_demo(self.conn):
+            return
+        removed = demo.clear(self.conn)
+        self._log(f"Διαγράφηκαν τα δεδομένα επίδειξης ({removed} πελάτες)")
+
     def on_add_client(self) -> None:
         dialog = ClientDialog(self.conn, parent=self)
         if not dialog.exec():
@@ -997,6 +1031,7 @@ class MainWindow(QMainWindow):
         if dialog.client is None:
             return
         create_backup(self.settings.db_path, reason="manual-client")
+        self._drop_demo_if_present()
         repo.upsert_client(self.conn, dialog.client, self.crypto)
         repo.seed_suppliers_from_clients(self.conn)
         self.conn.commit()
@@ -1018,6 +1053,7 @@ class MainWindow(QMainWindow):
             return
         with self._busy(f"Εισαγωγή {len(dialog.preview.rows)} πελατών…"):
             create_backup(self.settings.db_path, reason="import")
+            self._drop_demo_if_present()
             for row in dialog.preview.rows:
                 repo.upsert_client(self.conn, row.client, self.crypto)
             repo.seed_suppliers_from_clients(self.conn)
@@ -1134,17 +1170,23 @@ class MainWindow(QMainWindow):
             ),
             Step(
                 "1. Νέος πελάτης",
-                "Ξεκινήστε εδώ. Γράψτε το ΑΦΜ και η επωνυμία έρχεται μόνη της "
-                "από το VIES· μετά συμπληρώστε το κλειδί myDATA.\n\n"
-                "Στο ίδιο παράθυρο υπάρχει και η μαζική εισαγωγή από Excel.",
+                "Ξεκινήστε εδώ. Γράψτε μόνο το ΑΦΜ: μόλις συμπληρωθεί το 9ο "
+                "ψηφίο, η επωνυμία έρχεται μόνη της — δεν χρειάζεται να πατήσετε "
+                "τίποτα. Αν το ΑΦΜ το ξέρουμε ήδη, μπαίνει ακαριαία· αλλιώς "
+                "ρωτιέται το VIES.\n\n"
+                "Μετά συμπληρώστε το κλειδί myDATA. Στο ίδιο παράθυρο υπάρχει "
+                "και η μαζική εισαγωγή από Excel.",
                 lambda: self.menu.button("add_client"),
             ),
             Step(
                 "2. Οι πελάτες σας",
-                "Διπλό κλικ σε πελάτη τον (απο)επιλέγει για λήψη. Αν δεν έχει "
-                "κλειδί, το διπλό κλικ ανοίγει το παράθυρο για να το βάλετε.\n\n"
-                "Με δεξί κλικ: επεξεργασία, εκκαθάριση ή διαγραφή.\n"
-                "Με Ctrl ή Shift + κλικ διαλέγετε πολλούς μαζί.",
+                "Τσεκάρετε στο πρώτο κουτάκι όσους πελάτες θέλετε — αυτή είναι "
+                "η επιλογή σας και για τη λήψη και για μαζικές ενέργειες.\n\n"
+                "Για να σβήσετε πολλούς μαζί: τσεκάρετέ τους και πατήστε "
+                "Delete, ή δεξί κλικ → «Διαγραφή N τσεκαρισμένων πελατών».\n\n"
+                "Διπλό κλικ σε πελάτη τον (απο)επιλέγει. Αν δεν έχει κλειδί, "
+                "ανοίγει το παράθυρο για να το βάλετε. Με δεξί κλικ: "
+                "επεξεργασία, εκκαθάριση ή διαγραφή.",
                 lambda: self.table,
                 lambda: self._show_page("clients"),
             ),
@@ -1189,6 +1231,9 @@ class MainWindow(QMainWindow):
                 "Ασφάλεια και βοήθεια",
                 "Πριν από κάθε επικίνδυνη ενέργεια κρατιέται αντίγραφο της "
                 "βάσης, οπότε η «Επαναφορά» σας γυρίζει πίσω.\n\n"
+                "Η «Εκκαθάριση» σβήνει τα ληφθέντα· μέσα στο ίδιο παράθυρο "
+                "μπορείτε προαιρετικά να διαγράψετε και τα αρχεία από τον δίσκο "
+                "αλλά και τους ίδιους τους πελάτες (μαζική διαγραφή).\n\n"
                 "Το «Εγχειρίδιο PDF» τα εξηγεί όλα αναλυτικά. Καλή δουλειά!",
                 lambda: self.menu,
             ),
@@ -1217,11 +1262,36 @@ class MainWindow(QMainWindow):
         if self._tour is not None:
             self._tour.deleteLater()
         self._tour = Tour(self, self._tour_steps())
-        self._tour.finished.connect(
-            lambda: self._prefs.setValue("tour_seen", True)
-        )
+        self._tour.finished.connect(self._on_tour_finished)
         self._tour.start()
         self._tour.setFocus()
+
+    def _on_tour_finished(self, completed: bool) -> None:
+        """Τέλος ξενάγησης — και τέλος των δεδομένων επίδειξης.
+
+        Σβήνουμε μόνο αν ο χρήστης έφτασε ως το τέλος: όποιος πατήσει
+        «Παράλειψη» δεν έχει δει ακόμη τι κάνει η εφαρμογή, οπότε θα ήταν άδικο
+        να μείνει με άδεια οθόνη — τα δείγματα φεύγουν την επόμενη φορά.
+        """
+        self._prefs.setValue("tour_seen", True)
+        if not completed or not demo.has_demo(self.conn):
+            return
+        removed = demo.clear(self.conn)
+        self.reload_clients()
+        self._set_panel_open(False, animate=False)
+        self._log(f"Διαγράφηκαν τα δεδομένα επίδειξης ({removed} πελάτες)")
+        QMessageBox.information(
+            self, "Τέλος ξενάγησης",
+            "Οι πελάτες που είδατε ήταν <b>φανταστικά δεδομένα επίδειξης</b> "
+            "και μόλις διαγράφηκαν.<br><br>"
+            "Για να δουλέψει η εφαρμογή, προσθέστε τώρα τους <b>δικούς σας</b> "
+            "πελάτες:<br>"
+            "• <b>Νέος πελάτης</b> για έναν-έναν, ή<br>"
+            "• <b>Εισαγωγή από Excel…</b> για μαζική εισαγωγή από τα αρχεία "
+            "«Κωδικοί Υπόχρεων» / «Κωδικοί Υπηρεσιών μέσω Internet» της ΑΑΔΕ."
+            "<br><br>Η ξενάγηση είναι πάντα διαθέσιμη από το μενού.",
+        )
+        self.on_add_client()
 
     def _maybe_first_run_tour(self) -> None:
         """Μία φορά, στην πρώτη εκκίνηση.

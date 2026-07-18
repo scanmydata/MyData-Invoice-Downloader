@@ -49,6 +49,62 @@ def test_local_db_uses_wal(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_network_db_never_uses_wal(tmp_path: Path, monkeypatch) -> None:
+    """Ο πυρήνας της λειτουργίας «server»: πάνω από SMB το WAL φθείρει τη βάση.
+
+    Δεν στήνουμε αληθινό share — δηλώνουμε τη διαδρομή ως δικτυακή και ελέγχουμε
+    ότι το `connect()` γυρίζει σε rollback journal με συντηρητικές ρυθμίσεις.
+    """
+    monkeypatch.setattr("timologio.db.is_network_path", lambda _p: True)
+    conn = init_db(tmp_path / "net.db")
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "truncate"
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2  # FULL
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 20000
+    finally:
+        conn.close()
+
+
+def test_server_and_terminal_share_one_database(tmp_path: Path) -> None:
+    """Server και τερματικό βλέπουν ο ένας τις εγγραφές του άλλου.
+
+    Δύο ξεχωριστές συνδέσεις στο ίδιο αρχείο είναι ακριβώς το σενάριο «ο server
+    κρατά τη βάση, τα τερματικά τη διαβάζουν από τον κοινόχρηστο φάκελο».
+    """
+    from timologio.crypto import Crypto
+    from timologio.models import Client
+    from timologio.repo import upsert_client
+
+    shared = tmp_path / "shared.db"
+    server = init_db(shared)
+    terminal = init_db(shared)
+    crypto = Crypto(tmp_path / ".enckey")
+    try:
+        upsert_client(
+            server,
+            Client(vat="123456783", label="ΑΠΟ SERVER", mydata_user="u",
+                   mydata_key="a" * 32),
+            crypto,
+        )
+        server.commit()
+        row = terminal.execute(
+            "SELECT label FROM clients WHERE vat = '123456783'"
+        ).fetchone()
+        assert row is not None and row["label"] == "ΑΠΟ SERVER"
+
+        upsert_client(
+            terminal,
+            Client(vat="987654324", label="ΑΠΟ ΤΕΡΜΑΤΙΚΟ", mydata_user="u",
+                   mydata_key="b" * 32),
+            crypto,
+        )
+        terminal.commit()
+        assert server.execute("SELECT COUNT(*) c FROM clients").fetchone()["c"] == 2
+    finally:
+        server.close()
+        terminal.close()
+
+
 # --------------------------------------------------------------------------
 # Κλείδωμα λήψης μεταξύ υπολογιστών
 # --------------------------------------------------------------------------
@@ -144,7 +200,7 @@ def test_clean_name_rejects_placeholder() -> None:
 
 
 def test_clean_name_collapses_whitespace() -> None:
-    assert clean_name("  ΑΦΟΙ   ΛΑΓΟΥ\n ΟΕ ") == "ΑΦΟΙ ΛΑΓΟΥ ΟΕ"
+    assert clean_name("  ΧΡΩΜΑΤΑ   ΠΑΡΑΔΕΙΓΜΑ\n ΟΕ ") == "ΧΡΩΜΑΤΑ ΠΑΡΑΔΕΙΓΜΑ ΟΕ"
 
 
 @pytest.mark.parametrize(
@@ -189,17 +245,17 @@ def test_client_label_beats_vies(conn: sqlite3.Connection) -> None:
     """Η επωνυμία που έχει καταχωρήσει ο λογιστής υπερισχύει του VIES."""
     from timologio.repo import upsert_supplier
 
-    upsert_supplier(conn, "802576637", "ΕΠΙΣΗΜΗ ΑΠΟ VIES", "vies")
-    upsert_supplier(conn, "802576637", "ΤΟ ΒΑΨΙΜΟ Ε Ε", "client")
-    assert _name(conn, "802576637") == "ΤΟ ΒΑΨΙΜΟ Ε Ε"
+    upsert_supplier(conn, "123456783", "ΕΠΙΣΗΜΗ ΑΠΟ VIES", "vies")
+    upsert_supplier(conn, "123456783", "ΔΕΙΓΜΑ ΕΜΠΟΡΙΚΗ ΑΕ", "client")
+    assert _name(conn, "123456783") == "ΔΕΙΓΜΑ ΕΜΠΟΡΙΚΗ ΑΕ"
 
 
 def test_vies_never_downgrades_client_label(conn: sqlite3.Connection) -> None:
     from timologio.repo import upsert_supplier
 
-    upsert_supplier(conn, "802576637", "ΤΟ ΒΑΨΙΜΟ Ε Ε", "client")
-    upsert_supplier(conn, "802576637", "ΕΠΙΣΗΜΗ ΑΠΟ VIES", "vies")
-    assert _name(conn, "802576637") == "ΤΟ ΒΑΨΙΜΟ Ε Ε"
+    upsert_supplier(conn, "123456783", "ΔΕΙΓΜΑ ΕΜΠΟΡΙΚΗ ΑΕ", "client")
+    upsert_supplier(conn, "123456783", "ΕΠΙΣΗΜΗ ΑΠΟ VIES", "vies")
+    assert _name(conn, "123456783") == "ΔΕΙΓΜΑ ΕΜΠΟΡΙΚΗ ΑΕ"
 
 
 def test_vies_misses_are_not_retried(conn: sqlite3.Connection) -> None:
@@ -214,7 +270,7 @@ def test_vies_misses_are_not_retried(conn: sqlite3.Connection) -> None:
     )
 
     crypto = Crypto(tmp := Path(conn.execute("PRAGMA database_list").fetchone()[2]).parent / "k")
-    cid = upsert_client(conn, Client(vat="802576637", mydata_user="u", mydata_key="k" * 32), crypto)
+    cid = upsert_client(conn, Client(vat="123456783", mydata_user="u", mydata_key="k" * 32), crypto)
     upsert_document(conn, cid, Document(mark="1", issuer_vat="094173365",
                                         direction=Direction.INCOMING))
     conn.commit()

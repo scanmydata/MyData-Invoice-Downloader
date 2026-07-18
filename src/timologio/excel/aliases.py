@@ -2,7 +2,7 @@
 
 ΚΡΙΣΙΜΟ: το ταίριασμα είναι **whole-string**, ποτέ substring.
 
-Το e3_brain.py:1170 κάνει substring match, και το alias «subscription key»
+Το ένα παλιότερο εργαλείο κάνει substring match, και το alias «subscription key»
 περιέχεται στο «Subscription key e-timologio» (στήλη BL). Έτσι θα άρπαζε το
 κλειδί του e-timologio και θα το έστελνε ως myDATA key -> 403 σε κάθε πελάτη.
 Τα δύο προϊόντα έχουν διαφορετικά κλειδιά:
@@ -10,7 +10,7 @@
     BI = «Api myData»                  <- ΑΥΤΟ θέλουμε (REST API)
     BL = «Subscription key e-timologio» <- ΑΛΛΟ προϊόν
 
-Οι 42 από τους 153 πελάτες που έχουν BL αλλά όχι BI είναι ακριβώς η παγίδα.
+Οι πελάτες που έχουν BL αλλά όχι BI είναι ακριβώς η παγίδα.
 """
 
 from __future__ import annotations

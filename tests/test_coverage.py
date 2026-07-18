@@ -24,7 +24,7 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 def cid(conn: sqlite3.Connection, tmp_path: Path) -> int:
     crypto = Crypto(tmp_path / ".enckey")
     return upsert_client(
-        conn, Client(vat="802576637", mydata_user="u", mydata_key="k" * 32), crypto
+        conn, Client(vat="123456783", mydata_user="u", mydata_key="k" * 32), crypto
     )
 
 

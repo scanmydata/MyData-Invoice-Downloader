@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -19,13 +20,18 @@ from timologio.excel.reader import read_workbook
 from timologio.normalize import norm_afm, norm_header, valid_subscription_key
 from timologio.repo import get_client, upsert_client
 
-SAMPLES = Path(r"C:\Users\antonis\Documents\scanmydata\ScanmyData_private")
+#: Τα δείγματα Excel περιέχουν πραγματικά στοιχεία πελατών, οπότε ΔΕΝ μπαίνουν
+#: στο repo. Όποιος τα έχει, δείχνει τον φάκελό τους με το TIMOLOGIO_SAMPLE_DIR
+#: και τα σχετικά tests τρέχουν· αλλιώς παρακάμπτονται σιωπηλά.
+SAMPLES = Path(os.environ.get("TIMOLOGIO_SAMPLE_DIR", "")) if os.environ.get(
+    "TIMOLOGIO_SAMPLE_DIR"
+) else Path("__χωρίς_δείγματα__")
 FORMAT_A = SAMPLES / "ΤΕΣΤ_ΚΩΔΙΚΟΙ.xlsx"
 FORMAT_B = SAMPLES / "Κωδικοί_Υπόχρεων.xlsx"
 
 pytestmark = pytest.mark.skipif(
     not FORMAT_A.exists() or not FORMAT_B.exists(),
-    reason="τα δείγματα Excel δεν είναι διαθέσιμα",
+    reason="τα δείγματα Excel δεν είναι διαθέσιμα (δείτε TIMOLOGIO_SAMPLE_DIR)",
 )
 
 
@@ -40,11 +46,11 @@ def crypto(tmp_path: Path) -> Crypto:
 
 
 # --------------------------------------------------------------------------
-# Normalizer — ο λόγος που δεν επαναχρησιμοποιούμε τον e3_brain
+# Normalizer — ο λόγος που δεν επαναχρησιμοποιούμε το παλιότερο εργαλείο
 # --------------------------------------------------------------------------
 
 def test_norm_header_deletes_dots_not_spaces() -> None:
-    """«Α.Φ.Μ.» -> «αφμ». Ο e3_brain δίνει «α φ μ» και δεν ταιριάζει ποτέ."""
+    """«Α.Φ.Μ.» -> «αφμ». Το παλιότερο εργαλείο δίνει «α φ μ» και δεν ταιριάζει ποτέ."""
     assert norm_header("Α.Φ.Μ.") == "αφμ"
     assert norm_header("Ι.Κ.Α.") == "ικα"
 
@@ -55,7 +61,7 @@ def test_norm_header_folds_accents() -> None:
 
 
 def test_norm_header_no_collisions_on_real_headers() -> None:
-    """Καμία από τις 83 πραγματικές επικεφαλίδες δεν συγκρούεται με άλλη."""
+    """Καμία από όλες τις πραγματικές επικεφαλίδες δεν συγκρούεται με άλλη."""
     sheets = read_workbook(FORMAT_B)
     headers = [v for v in sheets[0].rows[0].values() if v.strip()]
     normed = [norm_header(h) for h in headers]
@@ -75,7 +81,7 @@ def test_api_mydata_maps_to_key() -> None:
 def test_etimologio_columns_never_map_to_mydata() -> None:
     """Το «Subscription key e-timologio» είναι ΑΛΛΟ προϊόν.
 
-    Με substring matching (e3_brain.py:1170) το alias «subscription key» θα το
+    Με substring matching (ένα παλιότερο εργαλείο) το alias «subscription key» θα το
     άρπαζε και θα το έστελνε ως myDATA key -> 403 παντού.
     """
     assert field_for("Subscription key e-timologio") is None
@@ -87,7 +93,7 @@ def test_etimologio_columns_never_map_to_mydata() -> None:
 def test_bl_only_rows_get_empty_key_not_etimologio_value() -> None:
     """Το κρίσιμο regression.
 
-    42 από τους 153 πελάτες έχουν κλειδί e-timologio (BL) αλλά ΟΧΙ κλειδί
+    αρκετοί πελάτες έχουν κλειδί e-timologio (BL) αλλά ΟΧΙ κλειδί
     myDATA (BI). Πρέπει να καταλήγουν με κενό κλειδί — ποτέ με την τιμή του BL.
     """
     sheets = read_workbook(FORMAT_B)
@@ -122,7 +128,7 @@ def test_format_a_detected_and_parsed() -> None:
     assert preview.fmt is ExcelFormat.AADE_BLOCK
     assert len(preview.rows) == 2, "το αρχείο έχει 2 μπλοκ (R7 και R14)"
     vats = {r.client.vat for r in preview.rows}
-    assert vats == {"998702854", "802576637"}
+    assert vats == {"555555559", "123456783"}
     assert preview.ready == 2
     for row in preview.rows:
         assert valid_subscription_key(row.client.mydata_key)
@@ -167,13 +173,13 @@ def test_empty_import_never_clobbers_stored_key(
 
     upsert_client(
         conn,
-        Client(vat="802576637", label="Αρχικό", mydata_user="U1", mydata_key="k" * 32),
+        Client(vat="123456783", label="Αρχικό", mydata_user="U1", mydata_key="k" * 32),
         crypto,
     )
-    upsert_client(conn, Client(vat="802576637", label="Νέα επωνυμία"), crypto)
+    upsert_client(conn, Client(vat="123456783", label="Νέα επωνυμία"), crypto)
     conn.commit()
 
-    client = get_client(conn, "802576637", crypto)
+    client = get_client(conn, "123456783", crypto)
     assert client is not None
     assert client.mydata_key == "k" * 32, "το κλειδί σβήστηκε από κενό import"
     assert client.mydata_user == "U1"
@@ -202,10 +208,10 @@ def test_key_is_encrypted_at_rest(conn: sqlite3.Connection, crypto: Crypto, tmp_
     from timologio.models import Client
 
     secret = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
-    upsert_client(conn, Client(vat="802576637", mydata_user="U", mydata_key=secret), crypto)
+    upsert_client(conn, Client(vat="123456783", mydata_user="U", mydata_key=secret), crypto)
     conn.commit()
     stored = conn.execute(
-        "SELECT mydata_key_enc FROM clients WHERE vat='802576637'"
+        "SELECT mydata_key_enc FROM clients WHERE vat='123456783'"
     ).fetchone()[0]
     assert stored.startswith("enc:1:")
     assert secret not in stored

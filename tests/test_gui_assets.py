@@ -110,7 +110,7 @@ def seeded_window(app, tmp_path, monkeypatch):
     conn = init_db(tmp_path / "timologio.db")
     upsert_client(
         conn,
-        Client(vat="802576637", label="ΤΟ ΒΑΨΙΜΟ Ε Ε", mydata_user="u",
+        Client(vat="123456783", label="ΔΕΙΓΜΑ ΕΜΠΟΡΙΚΗ ΑΕ", mydata_user="u",
                mydata_key="k" * 32),
         Crypto(tmp_path / ".enckey"),
     )

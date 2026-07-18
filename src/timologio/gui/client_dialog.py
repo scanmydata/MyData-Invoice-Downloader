@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from ..models import Client
 from ..normalize import norm_afm, valid_afm, valid_subscription_key
 from ..vies import ViesClient
+from . import excel_help
 from .icons import icon
 from .theme import CURRENT
 
@@ -160,6 +161,18 @@ class ClientDialog(QDialog):
             )
             self.btn_excel.clicked.connect(self._pick_excel)
             bulk.addWidget(self.btn_excel)
+
+            # Το «από πού βγάζω αυτό το Excel;» είναι η πρώτη απορία και δεν
+            # απαντιέται από μόνο του — οι διαδρομές ζουν δίπλα στο κουμπί.
+            self.btn_excel_help = QPushButton()
+            self.btn_excel_help.setIcon(icon("info", CURRENT.accent))
+            self.btn_excel_help.setFixedSize(30, 30)
+            self.btn_excel_help.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.btn_excel_help.setToolTip(
+                "Πώς εξάγω τους κωδικούς σε Excel από Hyper/Extra ή TaxSystem"
+            )
+            self.btn_excel_help.clicked.connect(lambda: excel_help.show(self))
+            bulk.addWidget(self.btn_excel_help)
             bulk.addStretch()
             root.addLayout(bulk)
 
@@ -193,11 +206,36 @@ class ClientDialog(QDialog):
     # ------------------------------------------------------------ VIES
     def _on_vat_changed(self, text: str) -> None:
         self._validate()
+        # Μόνο όταν έχουν πληκτρολογηθεί ΑΚΡΙΒΩΣ 9 ψηφία. Αλλιώς το norm_afm
+        # συμπληρώνει το 8ψήφιο με μηδενικό μπροστά και θα ξεκινούσε πρόωρη
+        # (λάθος) αναζήτηση· όσο εκείνη τρέχει, ο έλεγχος «ένα thread τη φορά»
+        # μπλοκάρει τη σωστή αναζήτηση στο 9ο ψηφίο — και ο χρήστης αναγκαζόταν
+        # να πατήσει το κουμπί. Το πεδίο δέχεται μόνο ψηφία (validator), οπότε
+        # το μήκος του κειμένου είναι ασφαλής ένδειξη.
+        if len(text.strip()) != AFM_DIGITS:
+            return
         vat = norm_afm(text)
-        # Αυτόματη αναζήτηση μόλις συμπληρωθούν τα 9 ψηφία — μία φορά ανά ΑΦΜ,
-        # αλλιώς κάθε πάτημα πλήκτρου θα χτυπούσε το VIES.
-        if vat and vat != self._looked_up and not self.label.text().strip():
+        if not vat or self.label.text().strip():
+            return
+        # 1) Αν το ξέρουμε ήδη (προμηθευτής ή πελάτης στη βάση), το φέρνουμε
+        #    ακαριαία — χωρίς δίκτυο, ακόμη κι αν το VIES είναι κάτω.
+        known = self._known_name(vat)
+        if known:
+            self._looked_up = vat
+            self.label.setText(known)
+            self._say(f"Βρέθηκε στο μητρώο: {known}", CURRENT.ok)
+            self._validate()
+            return
+        # 2) Αλλιώς ρωτάμε αυτόματα το VIES.
+        if vat != self._looked_up:
             self._lookup_vies()
+
+    def _known_name(self, vat: str) -> str:
+        """Επωνυμία από το τοπικό μητρώο (προμηθευτές/πελάτες), αν υπάρχει."""
+        row = self._conn.execute(
+            "SELECT name FROM suppliers WHERE vat = ?", (vat,)
+        ).fetchone()
+        return (row["name"].strip() if row and row["name"] else "")
 
     def _lookup_vies(self) -> None:
         vat = norm_afm(self.vat.text())

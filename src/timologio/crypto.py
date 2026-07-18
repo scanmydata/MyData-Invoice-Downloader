@@ -1,10 +1,10 @@
 """Κρυπτογράφηση credentials at-rest.
 
-Η σύμβαση είναι πορταρισμένη από mydata-etimologio-bridge/crypto.php:40-58,
+Η σύμβαση είναι πορταρισμένη από ένα παλιότερο εργαλείο μας,
 με libsodium -> Fernet. Δύο σημεία που αξίζει να κρατηθούν όπως είναι:
 
 * το versioned prefix ``enc:1:`` αφήνει χώρο για rotation χωρίς migration
-* το ``dec()`` επιστρέφει ό,τι δεν έχει prefix ως έχει (crypto.php:50), οπότε
+* το ``dec()`` επιστρέφει ό,τι δεν έχει prefix ως έχει (το παλιότερο εργαλείο), οπότε
   η ενεργοποίηση της κρυπτογράφησης δεν σπάει υπάρχοντα δεδομένα
 """
 
@@ -27,8 +27,7 @@ _ENV_KEY = "TIMOLOGIO_ENC_KEY"
 class SecretRedactingFilter(logging.Filter):
     """Κόβει credentials από τα logs.
 
-    Τα subscription keys είναι 32-hex (επιβεβαιωμένο: όλα τα 58 πραγματικά
-    κλειδιά στο Κωδικοί_Υπόχρεων.xlsx έχουν ακριβώς 32 χαρακτήρες), οπότε τα
+    Τα subscription keys είναι 32-hex (επιβεβαιωμένο: όλα τα πραγματικά κλειδιά που ελέγχθηκαν στους «Κωδικούς Υπόχρεων» έχουν ακριβώς 32 χαρακτήρες), οπότε τα
     πιάνουμε με pattern ακόμη κι αν ξεφύγουν από αμέλεια σε κάποιο μήνυμα.
     """
 
@@ -50,7 +49,7 @@ class SecretRedactingFilter(logging.Filter):
 
 
 def _lock_down(path: Path) -> None:
-    """Το chmod 0600 του crypto.php:36 δεν υπάρχει στα Windows -> ACL."""
+    """Το chmod 0600 του το παλιότερο εργαλείο δεν υπάρχει στα Windows -> ACL."""
     try:
         import getpass
 
@@ -95,7 +94,7 @@ class Crypto:
         if not stored:
             return ""
         if not stored.startswith(PREFIX):
-            # crypto.php:50 — plaintext περνάει ως έχει
+            # το παλιότερο εργαλείο — plaintext περνάει ως έχει
             return stored
         try:
             return self._fernet.decrypt(stored[len(PREFIX):].encode()).decode()

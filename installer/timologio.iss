@@ -1,4 +1,4 @@
-; Inno Setup script — Timologio Downloader
+﻿; Inno Setup script — Timologio Downloader
 ;
 ; Εγκατάσταση ανά χρήστη (PrivilegesRequired=lowest): δεν ζητά δικαιώματα
 ; διαχειριστή και δεν εμφανίζει UAC, ώστε να μπορεί να το εγκαταστήσει ο
@@ -29,6 +29,14 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\{#AppExeName}
+; Εικονίδιο του ίδιου του setup.exe και γραφικά του οδηγού. Παράγονται από το
+; logo.svg με το make_icon.py — ο Inno δέχεται μόνο .ico και .bmp εδώ.
+SetupIconFile=icon.ico
+WizardSmallImageFile=wizard-small.bmp
+WizardImageFile=wizard-large.bmp
+; Το λογότυπο είναι τετράγωνο· χωρίς αυτό ο Inno το τεντώνει στο πλάτος της
+; πλαϊνής λωρίδας και παραμορφώνεται.
+WizardImageStretch=no
 ; Το bundle είναι ~120MB· χωρίς αυτό ο installer μπορεί να χτυπήσει σε 32bit όριο.
 LZMAUseSeparateProcess=yes
 

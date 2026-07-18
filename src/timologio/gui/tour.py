@@ -38,7 +38,11 @@ class Step:
 
 
 class Tour(QWidget):
-    finished = Signal()
+    #: True αν ο χρήστης έφτασε ως το τέλος, False αν παρέλειψε ή πάτησε Escape.
+    #: Η διάκριση μετράει: μόνο μετά από ολοκληρωμένη ξενάγηση σβήνουμε τα
+    #: δεδομένα επίδειξης — αλλιώς όποιος την παρέλειπε θα έμενε με άδεια οθόνη
+    #: χωρίς να έχει δει τι κάνει η εφαρμογή.
+    finished = Signal(bool)
 
     def __init__(self, host: QWidget, steps: list[Step]) -> None:
         super().__init__(host)
@@ -83,7 +87,9 @@ class Tour(QWidget):
         buttons.setSpacing(6)
         self.btn_skip = QPushButton("Παράλειψη")
         self.btn_skip.setToolTip("Κλείσιμο της ξενάγησης")
-        self.btn_skip.clicked.connect(self.stop)
+        # Ρητό lambda: το clicked στέλνει το «checked» ως πρώτο όρισμα, που θα
+        # κατέληγε κατά λάθος στο `completed`.
+        self.btn_skip.clicked.connect(lambda: self.stop(completed=False))
         buttons.addWidget(self.btn_skip)
         buttons.addStretch()
 
@@ -104,15 +110,15 @@ class Tour(QWidget):
         self.raise_()
         self.go(0)
 
-    def stop(self) -> None:
+    def stop(self, completed: bool = False) -> None:
         self.hide()
-        self.finished.emit()
+        self.finished.emit(completed)
 
     def go(self, index: int) -> None:
         if index < 0:
             return
         if index >= len(self._steps):
-            self.stop()
+            self.stop(completed=True)
             return
         self._index = index
         step = self._steps[index]

@@ -21,8 +21,8 @@ from timologio.reports import (
 )
 from timologio.repo import upsert_client, upsert_document
 
-CLIENT_VAT = "802576637"
-CLIENT_LABEL = "ΤΟ ΒΑΨΙΜΟ Ε Ε"
+CLIENT_VAT = "123456783"
+CLIENT_LABEL = "ΔΕΙΓΜΑ ΕΜΠΟΡΙΚΗ ΑΕ"
 
 
 # --------------------------------------------------------------------------
@@ -31,7 +31,7 @@ CLIENT_LABEL = "ΤΟ ΒΑΨΙΜΟ Ε Ε"
 
 def test_client_folder_has_vat_and_label(tmp_path: Path) -> None:
     folder = client_folder(tmp_path, CLIENT_VAT, CLIENT_LABEL)
-    assert folder.name == "802576637 ΤΟ ΒΑΨΙΜΟ Ε Ε"
+    assert folder.name == "123456783 ΔΕΙΓΜΑ ΕΜΠΟΡΙΚΗ ΑΕ"
 
 
 def test_client_folder_without_label_is_just_vat(tmp_path: Path) -> None:
@@ -53,7 +53,7 @@ def test_client_folder_caps_very_long_label(tmp_path: Path) -> None:
 def test_find_client_folder_reuses_existing_despite_renamed_label(tmp_path: Path) -> None:
     """Η επωνυμία αλλάζει (VIES, νέο import). Τα αρχεία δεν πρέπει να
     σκορπιστούν σε δεύτερο φάκελο για τον ίδιο πελάτη."""
-    old = tmp_path / "802576637 ΠΑΛΙΑ ΕΠΩΝΥΜΙΑ"
+    old = tmp_path / "123456783 ΠΑΛΙΑ ΕΠΩΝΥΜΙΑ"
     old.mkdir(parents=True)
     assert find_client_folder(tmp_path, CLIENT_VAT, "ΝΕΑ ΕΠΩΝΥΜΙΑ") == old
 
@@ -65,17 +65,17 @@ def test_find_client_folder_matches_bare_vat_folder(tmp_path: Path) -> None:
 
 
 def test_find_client_folder_is_not_fooled_by_similar_vat(tmp_path: Path) -> None:
-    (tmp_path / "8025766370 ΑΛΛΟΣ").mkdir(parents=True)
+    (tmp_path / "1234567830 ΑΛΛΟΣ").mkdir(parents=True)
     found = find_client_folder(tmp_path, CLIENT_VAT, CLIENT_LABEL)
-    assert found.name == "802576637 ΤΟ ΒΑΨΙΜΟ Ε Ε"
+    assert found.name == "123456783 ΔΕΙΓΜΑ ΕΜΠΟΡΙΚΗ ΑΕ"
 
 
 def test_target_path_lives_under_named_client_folder(tmp_path: Path) -> None:
-    doc = Document(mark="1", invoice_type="1.1", issuer_vat="800916954",
-                   issuer_name="ΑΦΟΙ ΛΑΓΟΥ", counter_vat=CLIENT_VAT,
+    doc = Document(mark="1", invoice_type="1.1", issuer_vat="987654324",
+                   issuer_name="ΠΡΟΜΗΘΕΥΤΗΣ ΟΕ", counter_vat=CLIENT_VAT,
                    series="ΤΔΑ", aa="1", issue_date="2026-01-02", total_value=40.29)
     path = target_path(tmp_path, CLIENT_VAT, doc, client_label=CLIENT_LABEL)
-    assert path.parts[-4] == "802576637 ΤΟ ΒΑΨΙΜΟ Ε Ε"
+    assert path.parts[-4] == "123456783 ΔΕΙΓΜΑ ΕΜΠΟΡΙΚΗ ΑΕ"
     assert path.parts[-3] == "2026" and path.parts[-2] == "01"
 
 
@@ -93,18 +93,18 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
         crypto,
     )
     upsert_document(conn, cid, Document(
-        mark="1", invoice_type="1.1", issuer_vat="800916954",
-        issuer_name="ΑΦΟΙ ΛΑΓΟΥ", counter_vat=CLIENT_VAT, issue_date="2026-01-02",
+        mark="1", invoice_type="1.1", issuer_vat="987654324",
+        issuer_name="ΠΡΟΜΗΘΕΥΤΗΣ ΟΕ", counter_vat=CLIENT_VAT, issue_date="2026-01-02",
         net_value=10, vat_amount=2.4, total_value=12.4,
         downloading_invoice_url="https://x.gr/a", direction=Direction.INCOMING))
     upsert_document(conn, cid, Document(
         mark="2", invoice_type="2.1", issuer_vat=CLIENT_VAT,
-        counter_vat="094439854", counter_name="ΤΡΑΚΑΔΑΣ", issue_date="2026-07-05",
+        counter_vat="044004008", counter_name="ΠΑΡΑΔΕΙΓΜΑ", issue_date="2026-07-05",
         net_value=100, vat_amount=24, total_value=124,
         downloading_invoice_url="https://x.gr/b", direction=Direction.OUTGOING))
     upsert_document(conn, cid, Document(
-        mark="3", invoice_type="1.1", issuer_vat="800916954",
-        issuer_name="ΑΦΟΙ ΛΑΓΟΥ", counter_vat=CLIENT_VAT, issue_date="2026-03-10",
+        mark="3", invoice_type="1.1", issuer_vat="987654324",
+        issuer_name="ΠΡΟΜΗΘΕΥΤΗΣ ΟΕ", counter_vat=CLIENT_VAT, issue_date="2026-03-10",
         net_value=5, vat_amount=1.2, total_value=6.2, direction=Direction.INCOMING))
     conn.commit()
     return conn
@@ -112,8 +112,8 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 def _make_files(conn: sqlite3.Connection, root: Path) -> None:
     for mark, rel in (
-        ("1", "802576637 ΤΟ ΒΑΨΙΜΟ Ε Ε/2026/01/ΑΦΟΙ ΛΑΓΟΥ_800916954_2026-01-02_ΤΔΑ_1_12,40.pdf"),
-        ("2", "802576637 ΤΟ ΒΑΨΙΜΟ Ε Ε/2026/07/ΤΡΑΚΑΔΑΣ_094439854_2026-07-05_Α_2_124,00.pdf"),
+        ("1", "123456783 ΔΕΙΓΜΑ ΕΜΠΟΡΙΚΗ ΑΕ/2026/01/ΠΡΟΜΗΘΕΥΤΗΣ ΟΕ_987654324_2026-01-02_ΤΔΑ_1_12,40.pdf"),
+        ("2", "123456783 ΔΕΙΓΜΑ ΕΜΠΟΡΙΚΗ ΑΕ/2026/07/ΠΑΡΑΔΕΙΓΜΑ_044004008_2026-07-05_Α_2_124,00.pdf"),
     ):
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -150,7 +150,7 @@ def test_zip_is_flat(conn: sqlite3.Connection, tmp_path: Path) -> None:
         names = zf.namelist()
     assert names, "το ZIP δεν πρέπει να είναι άδειο"
     assert all("/" not in n for n in names), f"βρέθηκαν υποφάκελοι: {names}"
-    assert any(n.startswith("ΑΦΟΙ ΛΑΓΟΥ") for n in names)
+    assert any(n.startswith("ΠΡΟΜΗΘΕΥΤΗΣ ΟΕ") for n in names)
 
 
 def test_zip_disambiguates_same_name(conn: sqlite3.Connection, tmp_path: Path) -> None:
@@ -158,7 +158,7 @@ def test_zip_disambiguates_same_name(conn: sqlite3.Connection, tmp_path: Path) -
     αλληλοσβηστούν τώρα που το ZIP είναι επίπεδο."""
     root = tmp_path / "data"
     for mark, month in (("1", "01"), ("2", "07")):
-        rel = f"802576637 ΤΟ ΒΑΨΙΜΟ Ε Ε/2026/{month}/ΙΔΙΟ ΟΝΟΜΑ.pdf"
+        rel = f"123456783 ΔΕΙΓΜΑ ΕΜΠΟΡΙΚΗ ΑΕ/2026/{month}/ΙΔΙΟ ΟΝΟΜΑ.pdf"
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"%PDF-1.4 test")
@@ -197,7 +197,7 @@ def test_zip_of_selection_only(conn: sqlite3.Connection, tmp_path: Path) -> None
 
 def _make_xml_only(conn: sqlite3.Connection, root: Path) -> None:
     """Το «3» δεν πέρασε από πάροχο: έχει μόνο το XML της ΑΑΔΕ."""
-    rel = "802576637 ΤΟ ΒΑΨΙΜΟ Ε Ε/2026/03/ΑΦΟΙ ΛΑΓΟΥ_800916954_2026-03-10_Α_3_6,20.xml"
+    rel = "123456783 ΔΕΙΓΜΑ ΕΜΠΟΡΙΚΗ ΑΕ/2026/03/ΠΡΟΜΗΘΕΥΤΗΣ ΟΕ_987654324_2026-03-10_Α_3_6,20.xml"
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"<invoice/>")
@@ -284,19 +284,19 @@ def test_three_axes_at_once(conn: sqlite3.Connection) -> None:
 
 def test_suppliers_list_uses_the_other_party(conn: sqlite3.Connection) -> None:
     found = dict((vat, name) for vat, name, _ in suppliers_of(conn, CLIENT_VAT))
-    assert found["800916954"] == "ΑΦΟΙ ΛΑΓΟΥ"
-    assert found["094439854"] == "ΤΡΑΚΑΔΑΣ", "στα έσοδα ο «άλλος» είναι ο λήπτης"
+    assert found["987654324"] == "ΠΡΟΜΗΘΕΥΤΗΣ ΟΕ"
+    assert found["044004008"] == "ΠΑΡΑΔΕΙΓΜΑ", "στα έσοδα ο «άλλος» είναι ο λήπτης"
     assert CLIENT_VAT not in found, "ο ίδιος ο πελάτης δεν είναι προμηθευτής του εαυτού του"
 
 
 def test_filter_by_supplier(conn: sqlite3.Connection) -> None:
-    rows = documents_for(conn, CLIENT_VAT, "all", supplier_vat="800916954")
+    rows = documents_for(conn, CLIENT_VAT, "all", supplier_vat="987654324")
     assert len(rows) == 2
     assert {r["mark"] for r in rows} == {"1", "3"}
 
 
 def test_filter_by_supplier_on_income_side(conn: sqlite3.Connection) -> None:
-    rows = documents_for(conn, CLIENT_VAT, "all", supplier_vat="094439854")
+    rows = documents_for(conn, CLIENT_VAT, "all", supplier_vat="044004008")
     assert [r["mark"] for r in rows] == ["2"]
 
 
@@ -322,6 +322,6 @@ def test_filter_by_date_accepts_iso(conn: sqlite3.Connection) -> None:
 
 def test_filters_combine(conn: sqlite3.Connection) -> None:
     rows = documents_for(conn, CLIENT_VAT, "expense",
-                         supplier_vat="800916954", invoice_type="1.1",
+                         supplier_vat="987654324", invoice_type="1.1",
                          date_from="01/01/2026", date_to="31/01/2026")
     assert [r["mark"] for r in rows] == ["1"]

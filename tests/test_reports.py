@@ -13,7 +13,7 @@ from timologio.models import Classification, Client, Direction, Document
 from timologio.reports import analyse_client, documents_for
 from timologio.repo import upsert_client, upsert_document
 
-CLIENT_VAT = "802576637"
+CLIENT_VAT = "123456783"
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
     crypto = Crypto(tmp_path / ".enckey")
     cid = upsert_client(
         conn,
-        Client(vat=CLIENT_VAT, label="ΤΟ ΒΑΨΙΜΟ Ε Ε", mydata_user="u", mydata_key="k" * 32),
+        Client(vat=CLIENT_VAT, label="ΔΕΙΓΜΑ ΕΜΠΟΡΙΚΗ ΑΕ", mydata_user="u", mydata_key="k" * 32),
         crypto,
     )
 
@@ -36,10 +36,10 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
         )
 
     # Έσοδα: τα εκδίδει ο πελάτης
-    add("1", "2.1", CLIENT_VAT, "094439854", 100.0, 24.0, Direction.OUTGOING)
-    add("2", "1.1", CLIENT_VAT, "094439854", 200.0, 48.0, Direction.OUTGOING)
+    add("1", "2.1", CLIENT_VAT, "044004008", 100.0, 24.0, Direction.OUTGOING)
+    add("2", "1.1", CLIENT_VAT, "044004008", 200.0, 48.0, Direction.OUTGOING)
     # Έξοδα: τα εκδίδει άλλος
-    add("3", "1.1", "800916954", CLIENT_VAT, 50.0, 12.0, Direction.INCOMING)
+    add("3", "1.1", "987654324", CLIENT_VAT, 50.0, 12.0, Direction.INCOMING)
     # Η ΠΑΓΙΔΑ: 13.1 λιανικό έξοδο — το υποβάλλει ο ΛΗΠΤΗΣ, οπότε είναι
     # «εκδοθέν» (outgoing) αλλά είναι ΕΞΟΔΟ και δεν έχει καθόλου ΑΦΜ εκδότη.
     add("4", "13.1", "", CLIENT_VAT, 10.0, 2.4, Direction.OUTGOING)

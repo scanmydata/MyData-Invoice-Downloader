@@ -11,6 +11,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from ..crypto import SecretRedactingFilter
+from . import i18n
 
 #: Δικό μας AppUserModelID. Χωρίς αυτό, τα Windows ομαδοποιούν το παράθυρο κάτω
 #: από τον host (python.exe) και δείχνουν ΤΟ ΔΙΚΟ ΤΟΥ εικονίδιο στη γραμμή
@@ -40,6 +41,10 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("Timologio Downloader")
     app.setOrganizationName("scanmydata")
+    # Ελληνικά και για ό,τι γράφει το ίδιο το Qt (κουμπιά «Ναι/Άκυρο», μενού
+    # δεξιού κλικ, ονόματα μηνών). Κρατιέται σε μεταβλητή: αν τον μαζέψει ο
+    # garbage collector, το Qt ξαναγυρνά στα αγγλικά.
+    app._greek = i18n.install(app)  # noqa: SLF001
     icon = app_icon()
     app.setWindowIcon(icon)
 
