@@ -151,7 +151,7 @@ class MainWindow(QMainWindow):
         if self._prefs.value("menu_collapsed", False, type=bool):
             self.menu.set_collapsed(True, animate=False)
         self.busy = BusyOverlay(self)
-        # Πρώτη εκκίνηση σε άδεια βάση: φανταστικά δεδομένα, ώστε η ξενάγηση να
+        # Πρώτη εκκίνηση σε άδεια βάση: εικονικά δεδομένα, ώστε η ξενάγηση να
         # έχει τι να δείξει αντί για άδειους πίνακες. Σβήνονται μόλις ο χρήστης
         # ολοκληρώσει την ξενάγηση (δείτε _on_tour_finished).
         if demo.should_seed(self.conn):
@@ -382,12 +382,17 @@ class MainWindow(QMainWindow):
         self.table.doubleClicked.connect(self._on_double_click)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
-        # Πλήκτρο Delete: σβήνει όσους πελάτες είναι φωτισμένοι (έναν ή πολλούς),
-        # χωρίς να χρειάζεται δεξί κλικ. Περιορίζεται στον πίνακα ώστε να μη
-        # «σβήνει» τυχαία όταν ο χρήστης δουλεύει αλλού.
-        delete_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Delete), self.table)
-        delete_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        # Πλήκτρο Delete. Ήταν δεμένο στον πίνακα, οπότε λειτουργούσε μόνο όταν
+        # ο πίνακας είχε την εστίαση — και μετά από ένα κλικ σε checkbox ή στην
+        # αναζήτηση δεν έκανε τίποτα. Τώρα ακούει σε όλο το παράθυρο και
+        # φιλτράρει μόνο του πού επιτρέπεται (δείτε _delete_selected).
+        delete_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Delete), self)
+        delete_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
         delete_shortcut.activated.connect(self._delete_selected)
+        # Και το Backspace: στα φορητά χωρίς πλήκτρο Delete είναι ο μόνος τρόπος.
+        backspace = QShortcut(QKeySequence(Qt.Key.Key_Backspace), self)
+        backspace.setContext(Qt.ShortcutContext.WindowShortcut)
+        backspace.activated.connect(self._delete_selected)
         splitter.addWidget(self.table)
 
         self.analysis = AnalysisPanel()
@@ -899,13 +904,13 @@ class MainWindow(QMainWindow):
         menu.addAction(delete)
 
         # Μαζική διαγραφή όσων έχει τσεκάρει ο χρήστης — ο φυσικός τρόπος να
-        # επιλέξει πολλούς. Εμφανίζεται μόνο όταν οι τσεκαρισμένοι είναι άλλοι
+        # επιλέξει πολλούς. Εμφανίζεται μόνο όταν οι επιλεγμένοι είναι άλλοι
         # από τη γραμμή που δείχνει το δεξί κλικ, ώστε να μην διπλασιάζεται.
         checked = sorted(self._checked)
         if checked and set(checked) != set(selected):
             bulk = QAction(
                 icon("delete", CURRENT.bad),
-                f"Διαγραφή {len(checked)} τσεκαρισμένων πελατών", self,
+                f"Διαγραφή {len(checked)} επιλεγμένων πελατών", self,
             )
             bulk.triggered.connect(lambda: self.on_delete_clients(checked))
             menu.addAction(bulk)
@@ -926,10 +931,17 @@ class MainWindow(QMainWindow):
         self._log(f"Ενημερώθηκε ο πελάτης {vat}")
 
     def _delete_selected(self) -> None:
-        """Το πλήκτρο Delete σβήνει τους ΤΣΕΚΑΡΙΣΜΕΝΟΥΣ πελάτες — ο φυσικός
-        τρόπος να επιλέξει κανείς πολλούς. Αν κανείς δεν είναι τσεκαρισμένος,
-        σβήνει τους φωτισμένους. Χωρίς καμία επιλογή δεν κάνει τίποτα, ώστε ένα
-        κατά λάθος Delete να μη σβήσει «όλους»."""
+        """Το πλήκτρο Delete σβήνει τους ΕΠΙΛΕΓΜΕΝΟΥΣ πελάτες — ο φυσικός
+        τρόπος να επιλέξει κανείς πολλούς. Αν κανείς δεν είναι επιλεγμένος με
+        checkbox, σβήνει τους φωτισμένους. Χωρίς καμία επιλογή δεν κάνει
+        τίποτα, ώστε ένα κατά λάθος Delete να μη σβήσει «όλους»."""
+        if self._current_page() != "clients":
+            return
+        # Μέσα σε πεδίο κειμένου το Delete ανήκει στο κείμενο, όχι στους
+        # πελάτες: αλλιώς μια διόρθωση στην αναζήτηση θα ζητούσε διαγραφή.
+        focused = QApplication.focusWidget()
+        if isinstance(focused, (QLineEdit, QComboBox)):
+            return
         targets = sorted(self._checked) or self._selected_vats(only_ready=False)
         self.on_delete_clients(targets)
 
@@ -1113,7 +1125,7 @@ class MainWindow(QMainWindow):
         """Τα δείγματα φεύγουν μόλις μπουν αληθινά δεδομένα.
 
         Χωρίς αυτό, όποιος παρέλειπε την ξενάγηση και έκανε κατευθείαν εισαγωγή
-        θα κατέληγε με τους φανταστικούς πελάτες ανακατεμένους με τους δικούς
+        θα κατέληγε με τους εικονικούς πελάτες ανακατεμένους με τους δικούς
         του — και θα προσπαθούσε να κατεβάσει παραστατικά για ΑΦΜ που δεν
         υπάρχουν.
         """
@@ -1284,7 +1296,7 @@ class MainWindow(QMainWindow):
                 "Τσεκάρετε στο πρώτο κουτάκι όσους πελάτες θέλετε — αυτή είναι "
                 "η επιλογή σας και για τη λήψη και για μαζικές ενέργειες.\n\n"
                 "Για να σβήσετε πολλούς μαζί: τσεκάρετέ τους και πατήστε "
-                "Delete, ή δεξί κλικ → «Διαγραφή N τσεκαρισμένων πελατών».\n\n"
+                "Delete, ή δεξί κλικ → «Διαγραφή N επιλεγμένων πελατών».\n\n"
                 "Διπλό κλικ σε πελάτη τον (απο)επιλέγει. Αν δεν έχει κλειδί, "
                 "ανοίγει το παράθυρο για να το βάλετε. Με δεξί κλικ: "
                 "επεξεργασία, εκκαθάριση ή διαγραφή.",
@@ -1383,7 +1395,7 @@ class MainWindow(QMainWindow):
         self._log(f"Διαγράφηκαν τα δεδομένα επίδειξης ({removed} πελάτες)")
         QMessageBox.information(
             self, "Τέλος ξενάγησης",
-            "Οι πελάτες που είδατε ήταν <b>φανταστικά δεδομένα επίδειξης</b> "
+            "Οι πελάτες που είδατε ήταν <b>εικονικά δεδομένα επίδειξης</b> "
             "και μόλις διαγράφηκαν.<br><br>"
             "Για να δουλέψει η εφαρμογή, προσθέστε τώρα τους <b>δικούς σας</b> "
             "πελάτες:<br>"
