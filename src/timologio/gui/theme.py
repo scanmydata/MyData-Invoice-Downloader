@@ -338,7 +338,9 @@ QLabel#menuVersion {{ font-size: 10px; color: {p.line}; }}
 
 QPushButton#menuButton {{
     background: transparent; border: none; border-radius: 8px;
-    padding: 8px 10px; text-align: left; font-weight: 600; color: {p.muted};
+    /* 6px και όχι 8: με 14 κουμπιά, τα 2px ανά κουμπί είναι 28px συνολικά —
+       αρκετά ώστε το μενού να χωρά χωρίς να συμπιέζεται η κεφαλίδα. */
+    padding: 6px 10px; text-align: left; font-weight: 600; color: {p.muted};
 }}
 QPushButton#menuButton:hover {{ background: {p.panel}; color: {p.txt}; }}
 QPushButton#menuButton[active="true"] {{ background: {p.chip}; color: {p.accent}; }}

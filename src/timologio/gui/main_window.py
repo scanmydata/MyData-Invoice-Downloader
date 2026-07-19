@@ -119,7 +119,7 @@ class MainWindow(QMainWindow):
         # Κάτω από αυτό, ο πίνακας πελατών (9 στήλες) και η ανάλυση δεν χωρούν
         # μαζί και εμφανίζεται οριζόντια μπάρα. Όποιος έχει μικρότερη οθόνη
         # μαζεύει το πλαϊνό μενού και κερδίζει 142 pixel.
-        self.setMinimumSize(1180, 700)
+        self.setMinimumSize(1206, 700)
 
         self.settings = load_settings()
         self._role = load_role()

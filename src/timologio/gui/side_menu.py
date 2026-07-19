@@ -21,7 +21,11 @@ from .icons import icon, logo_pixmap
 from .theme import CURRENT
 from .widgets import ToggleSwitch
 
-WIDE, NARROW = 200, 58
+# Το WIDE δεν είναι στρογγυλός αριθμός για την ομορφιά: στα 200 ο υπότιτλος
+# «Λήψη Παραστατικών» ζητούσε 96px σε κουτί 94px και κοβόταν το τελευταίο
+# γράμμα. Τα 226 αφήνουν ~12px περιθώριο, ώστε να αντέχει και μεγαλύτερη
+# γραμματοσειρά συστήματος ή άλλη κλίμακα οθόνης.
+WIDE, NARROW = 226, 58
 
 
 #: Εικονίδιο ανά ενέργεια, όπου το όνομα της ενέργειας δεν είναι και όνομα
@@ -179,6 +183,10 @@ class SideMenu(QWidget):
     # ------------------------------------------------------------------ UI
     def _header(self) -> QWidget:
         holder = QWidget()
+        # Όταν το μενού δεν χωρά σε ύψος, το Qt συμπιέζει ό,τι μπορεί. Η
+        # κεφαλίδα συρρικνωνόταν στα 31px ενώ το λογότυπο είναι 38, οπότε του
+        # κοβόταν το κάτω μέρος. Το λογότυπο δεν είναι διαπραγματεύσιμο.
+        holder.setMinimumHeight(38)
         row = QHBoxLayout(holder)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(9)
@@ -216,6 +224,7 @@ class SideMenu(QWidget):
     def _footer(self) -> QWidget:
         """Λογότυπο και έκδοση στο κάτω μέρος."""
         holder = QWidget()
+        holder.setMinimumHeight(22)  # ίδιος λόγος με την κεφαλίδα
         row = QHBoxLayout(holder)
         row.setContentsMargins(4, 0, 0, 0)
         row.setSpacing(8)
