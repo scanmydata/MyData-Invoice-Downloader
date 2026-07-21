@@ -426,6 +426,27 @@ def pending_documents(conn: sqlite3.Connection, client_id: int) -> list[sqlite3.
     )
 
 
+def viewer_only_documents(
+    conn: sqlite3.Connection, vats: list[str] | None = None
+) -> list[sqlite3.Row]:
+    """Τα «μόνο online» παραστατικά (με σύνδεσμο παρόχου), για headless λήψη.
+
+    Επιστρέφει και τα στοιχεία του πελάτη (ΑΦΜ/επωνυμία) ώστε να χτιστεί το
+    όνομα αρχείου. Προαιρετικά περιορίζεται σε συγκεκριμένους πελάτες.
+    """
+    sql = (
+        """SELECT d.*, c.vat AS client_vat, c.label AS client_label
+           FROM documents d JOIN clients c ON c.id = d.client_id
+           WHERE d.status='viewer_only' AND d.downloading_invoice_url <> ''"""
+    )
+    params: list[object] = []
+    if vats:
+        sql += f" AND c.vat IN ({','.join('?' * len(vats))})"
+        params.extend(vats)
+    sql += " ORDER BY c.label, d.issue_date, d.mark"
+    return list(conn.execute(sql, params))
+
+
 def start_run(conn: sqlite3.Connection, date_from: str, date_to: str, clients_total: int) -> int:
     cur = conn.execute(
         "INSERT INTO runs(date_from, date_to, clients_total) VALUES(?,?,?)",

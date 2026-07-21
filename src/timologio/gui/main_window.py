@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QProgressBar,
+    QProgressDialog,
     QPushButton,
     QSplitter,
     QStackedWidget,
@@ -78,7 +79,7 @@ from .tour import Step, Tour
 from .tray import Tray
 from . import unlock, updater
 from .widgets import resort, setup_columns
-from .workers import SyncWorker
+from .workers import HeadlessWorker, SyncWorker
 
 log = logging.getLogger(__name__)
 
@@ -970,6 +971,7 @@ class MainWindow(QMainWindow):
             "import": self.on_import,
             "folder": self.on_open_folder,
             "csv": self.on_export,
+            "online_pdf": self.on_download_viewer_only,
             "backup": self.on_backup,
             "restore": self.on_restore,
             "wipe": lambda: self.on_wipe(),
@@ -1435,6 +1437,120 @@ class MainWindow(QMainWindow):
         root.mkdir(parents=True, exist_ok=True)
         _reveal(root)
 
+    # -------------------------------------------------- λήψη «μόνο online»
+    def on_download_viewer_only(self) -> None:
+        """Κατεβάζει με headless browser όσα παραστατικά ο πάροχος δείχνει
+        μόνο online (SPA προβολές που δεν δίνουν PDF στο downloadingInvoiceUrl)."""
+        if self._thread is not None or getattr(self, "_hl_thread", None) is not None:
+            QMessageBox.information(
+                self, "Εκτελείται ήδη",
+                "Περιμένετε να ολοκληρωθεί η τρέχουσα εργασία.",
+            )
+            return
+
+        n = self.conn.execute(
+            "SELECT COUNT(*) c FROM documents "
+            "WHERE status='viewer_only' AND downloading_invoice_url <> ''"
+        ).fetchone()["c"]
+        if not n:
+            QMessageBox.information(
+                self, "Λήψη μόνο-online",
+                "Δεν υπάρχουν παραστατικά «μόνο online» προς λήψη.\n\n"
+                "Αυτά εμφανίζονται όταν ένας πάροχος δείχνει το παραστατικό μόνο "
+                "στη σελίδα του, χωρίς αρχείο PDF.",
+            )
+            return
+
+        from ..download import headless
+
+        if not headless.available():
+            QMessageBox.warning(
+                self, "Χρειάζεται Microsoft Edge ή Google Chrome",
+                "Για τη λήψη των «μόνο online» παραστατικών χρειάζεται ένας "
+                "browser (Edge ή Chrome) εγκατεστημένος στον υπολογιστή.\n\n"
+                "Το Microsoft Edge υπάρχει προεγκατεστημένο σε κάθε Windows "
+                "10/11· αν λείπει, εγκαταστήστε τον Edge ή τον Chrome και "
+                "δοκιμάστε ξανά.",
+            )
+            return
+
+        answer = QMessageBox.question(
+            self, "Λήψη μόνο-online",
+            f"Θα ανοίξει ένας αόρατος (headless) browser και θα προσπαθήσει να "
+            f"κατεβάσει <b>{n}</b> παραστατικά που ο πάροχος δείχνει μόνο online, "
+            "τυπώνοντάς τα σε PDF.<br><br>"
+            "Μπορεί να πάρει λίγη ώρα. Όσα δεν στοιχειοθετούνται (π.χ. προβολές "
+            "Epsilon πίσω από Cloudflare) θα μείνουν ως έχουν.<br><br>Να ξεκινήσει;",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        create_backup(self.settings.db_path, reason="headless")
+        self._hl_dialog = QProgressDialog(
+            "Άνοιγμα browser…", "Ακύρωση", 0, n, self
+        )
+        self._hl_dialog.setWindowTitle("Λήψη μόνο-online")
+        self._hl_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        self._hl_dialog.setMinimumDuration(0)
+        self._hl_dialog.setAutoClose(False)
+        self._hl_dialog.setValue(0)
+
+        self._hl_thread = QThread(self)
+        self._hl_worker = HeadlessWorker(None)
+        self._hl_worker.moveToThread(self._hl_thread)
+        self._hl_thread.started.connect(self._hl_worker.run)
+        self._hl_worker.message.connect(self._on_headless_message)
+        self._hl_worker.finished.connect(self._on_headless_finished)
+        self._hl_worker.failed.connect(self._on_headless_failed)
+        self._hl_dialog.canceled.connect(self._hl_worker.cancel)
+        self._hl_thread.start()
+
+    def _on_headless_message(self, text: str) -> None:
+        if self._hl_dialog is not None:
+            # Κάθε μήνυμα αντιστοιχεί σε ένα παραστατικό — προχωρά η μπάρα.
+            self._hl_dialog.setValue(min(self._hl_dialog.value() + 1,
+                                         self._hl_dialog.maximum()))
+            self._hl_dialog.setLabelText(text.strip().lstrip("✓⧉✗ "))
+        self._log(text)
+
+    def _teardown_headless(self) -> None:
+        if getattr(self, "_hl_thread", None) is not None:
+            self._hl_thread.quit()
+            self._hl_thread.wait(5000)
+        self._hl_thread = None
+        self._hl_worker = None
+        if getattr(self, "_hl_dialog", None) is not None:
+            self._hl_dialog.close()
+            self._hl_dialog = None
+
+    def _on_headless_finished(self, saved: int, skipped: int, failed: int) -> None:
+        self._teardown_headless()
+        self.reload_clients()
+        self._on_selection()
+        lines = [f"<b>{saved}</b> κατέβηκαν ως PDF"]
+        if skipped:
+            lines.append(
+                f"{skipped} παρέμειναν μόνο online (ο πάροχος δεν τα "
+                "στοιχειοθετεί σε headless browser)"
+            )
+        if failed:
+            lines.append(
+                f'<span style="color:{CURRENT.bad};">{failed} με σφάλμα</span>'
+            )
+        QMessageBox.information(
+            self, "Η λήψη μόνο-online ολοκληρώθηκε",
+            "Ολοκληρώθηκε.<br><br>" + "<br>".join(lines),
+        )
+
+    def _on_headless_failed(self, detail: str) -> None:
+        self._teardown_headless()
+        QMessageBox.warning(
+            self, "Η λήψη μόνο-online δεν ολοκληρώθηκε",
+            f"{detail.splitlines()[0]}",
+        )
+
     def on_open_log(self) -> None:
         if not self.log_path.exists():
             QMessageBox.information(
@@ -1783,6 +1899,7 @@ class MainWindow(QMainWindow):
         self.menu.set_enabled_action("import", not running)
         self.menu.set_enabled_action("restore", not running)
         self.menu.set_enabled_action("add_client", not running)
+        self.menu.set_enabled_action("online_pdf", not running)
         self._strip.setVisible(running)
         if running:
             self.progress.setRange(0, total)

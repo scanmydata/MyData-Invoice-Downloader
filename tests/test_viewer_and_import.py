@@ -154,3 +154,81 @@ def test_update_info_carries_notes():
     assert UpdateInfo("0.1", "0.2", "u").notes == ""
     info = UpdateInfo("0.1", "0.2", "u", notes="## Τι νέο\n- κάτι")
     assert "Τι νέο" in info.notes
+
+
+# --- headless λήψη «μόνο online» -------------------------------------------
+
+
+def test_viewer_only_documents_query(conn):
+    cid = _add_doc(conn, "M_view", "viewer_only")
+    # ίδιος πελάτης: ένα downloaded (αγνοείται) κι ένα viewer_only χωρίς url.
+    conn.execute(
+        "INSERT INTO documents(client_id,mark,status,downloading_invoice_url) "
+        "VALUES(?,?,?,?)", (cid, "M_dl", "downloaded", "https://x/y"))
+    conn.execute(
+        "INSERT INTO documents(client_id,mark,status,downloading_invoice_url) "
+        "VALUES(?,?,?,?)", (cid, "M_nourl", "viewer_only", ""))
+    conn.commit()
+    from timologio import repo
+
+    rows = repo.viewer_only_documents(conn)
+    assert [r["mark"] for r in rows] == ["M_view"]
+    assert rows[0]["client_vat"] == "090000045"
+    assert rows[0]["client_label"] == ""  # όπως μπήκε στο _add_doc
+
+
+def test_find_browser_and_available_never_crash():
+    from timologio.download import headless
+
+    # Δεν βεβαιώνουμε την ύπαρξη browser (μπορεί να λείπει σε CI) — μόνο ότι δεν
+    # σκάει και επιστρέφει τον σωστό τύπο.
+    b = headless.find_browser()
+    assert b is None or b.exists()
+    assert isinstance(headless.available(), bool)
+
+
+def test_download_viewer_only_saves_renderable_keeps_rest(conn, tmp_path, monkeypatch):
+    """Ο renderer επιστρέφει PDF για τη μία σελίδα και None για την άλλη:
+    η πρώτη γίνεται downloaded με αρχείο, η δεύτερη μένει viewer_only."""
+    from timologio import sync
+    from timologio.config import Settings
+    from timologio.download import headless
+
+    cid = _add_doc(conn, "M_good", "viewer_only")
+    # συμπληρώνουμε url/στοιχεία στη γραμμή που έφτιαξε το _add_doc
+    conn.execute(
+        "UPDATE documents SET downloading_invoice_url='https://prov/good',"
+        "issuer_vat='111',series='A',aa='1',issue_date='2026-01-01' WHERE mark='M_good'")
+    conn.execute(
+        "INSERT INTO documents(client_id,mark,status,downloading_invoice_url,"
+        "issuer_vat,series,aa,issue_date) VALUES(?,?,?,?,?,?,?,?)",
+        (cid, "M_bad", "viewer_only", "https://prov/bad", "222", "A", "2", "2026-01-02"),
+    )
+    conn.commit()
+
+    class FakeRenderer:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def render_pdf(self, url, **k):
+            return b"%PDF-1.4\nfake invoice\n%%EOF" if url.endswith("good") else None
+
+    monkeypatch.setattr(headless, "HeadlessRenderer", FakeRenderer)
+
+    settings = Settings(data_dir=tmp_path)
+    saved, skipped, failed = sync.download_viewer_only(conn, settings)
+    assert (saved, skipped, failed) == (1, 1, 0)
+
+    rows = {r["mark"]: r for r in conn.execute(
+        "SELECT mark,status,local_path,file_bytes FROM documents")}
+    assert rows["M_good"]["status"] == "downloaded"
+    assert rows["M_good"]["file_bytes"] > 0
+    assert (settings.storage_root / rows["M_good"]["local_path"]).exists()
+    assert rows["M_bad"]["status"] == "viewer_only"
+    assert rows["M_bad"]["local_path"] == ""

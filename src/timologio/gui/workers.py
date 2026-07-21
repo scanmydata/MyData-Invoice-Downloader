@@ -126,3 +126,41 @@ class SyncWorker(QObject):
             self.failed.emit(f"{exc}\n\n{traceback.format_exc()}")
         finally:
             lock.release()
+
+
+class HeadlessWorker(QObject):
+    """Κατεβάζει με headless browser τα «μόνο online» παραστατικά.
+
+    Ζει σε δικό του QThread. Το ίδιο μοτίβο με το SyncWorker: μεταφράζει την
+    πρόοδο του πυρήνα (sync.download_viewer_only) σε Qt signals.
+    """
+
+    message = Signal(str)
+    finished = Signal(int, int, int)  # saved, skipped, failed
+    failed = Signal(str)
+
+    def __init__(self, vats: list[str] | None = None) -> None:
+        super().__init__()
+        self._vats = vats
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel.set()
+        self.message.emit("Ακύρωση…")
+
+    @Slot()
+    def run(self) -> None:
+        from ..sync import download_viewer_only
+
+        settings = load_settings()
+        try:
+            conn = init_db(settings.db_path)
+            saved, skipped, failed = download_viewer_only(
+                conn, settings, vats=self._vats,
+                progress=lambda m: self.message.emit(m),
+                should_cancel=self._cancel.is_set,
+            )
+            conn.close()
+            self.finished.emit(saved, skipped, failed)
+        except Exception as exc:  # π.χ. BrowserNotFound
+            self.failed.emit(f"{exc}\n\n{traceback.format_exc()}")

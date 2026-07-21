@@ -38,6 +38,7 @@ _ICONS = {
     "logfile": "csv",
     "password": "lock",
     "control": "network",
+    "online_pdf": "link",
 }
 
 
@@ -129,6 +130,9 @@ class SideMenu(QWidget):
             ("folder", "Φάκελος αρχείων", "Άνοιγμα του φακέλου με τα PDF"),
             ("csv", "Εξαγωγή CSV",
              "Αναλυτική κατάσταση σε CSV — επιλέξτε πρώτα πελάτη/πελάτες"),
+            ("online_pdf", "Λήψη μόνο-online",
+             "Κατεβάζει με headless browser (Edge/Chrome) όσα παραστατικά ο "
+             "πάροχος δείχνει μόνο online"),
         ]:
             self._add(layout, name, text, tip)
 

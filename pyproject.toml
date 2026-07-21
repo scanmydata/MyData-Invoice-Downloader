@@ -1,6 +1,6 @@
 [project]
 name = "timologio-downloader"
-version = "0.2.5"
+version = "0.2.6"
 description = "Μαζική λήψη παραστατικών myDATA (ΑΑΔΕ) για πολλαπλούς πελάτες"
 readme = "README.md"
 authors = [
@@ -19,6 +19,9 @@ dependencies = [
 [project.optional-dependencies]
 gui = [
     "pyside6>=6.11.1",
+    # Οδηγεί τον εγκατεστημένο Edge/Chrome μέσω DevTools (CDP over websocket) για
+    # τη λήψη των «μόνο online» παραστατικών. Καθαρά Python — χωρίς driver.
+    "websocket-client>=1.8.0",
 ]
 
 [project.scripts]

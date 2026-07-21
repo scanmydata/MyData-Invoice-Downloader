@@ -436,3 +436,54 @@ def sync_client(
     )
     download_pending(conn, client, settings, stats=stats, progress=progress)
     return stats
+
+
+def download_viewer_only(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    *,
+    vats: list[str] | None = None,
+    progress: ProgressFn = _noop,
+    should_cancel: Callable[[], bool] | None = None,
+) -> tuple[int, int, int]:
+    """Κατεβάζει με headless browser τα «μόνο online» παραστατικά.
+
+    Ανοίγει μία φορά τον browser και τυπώνει κάθε σελίδα σε PDF. Όσα δεν
+    στοιχειοθετούνται (interactive Blazor/Cloudflare) μένουν «μόνο online».
+    Επιστρέφει (αποθηκεύτηκαν, παραλείφθηκαν, σφάλματα).
+    """
+    from .download.headless import HeadlessError, HeadlessRenderer
+
+    rows = repo.viewer_only_documents(conn, vats)
+    if not rows:
+        return 0, 0, 0
+
+    saved = skipped = failed = 0
+    with HeadlessRenderer() as renderer:
+        for row in rows:
+            if should_cancel and should_cancel():
+                break
+            label = row["client_label"] or row["client_vat"]
+            try:
+                pdf = renderer.render_pdf(row["downloading_invoice_url"])
+            except HeadlessError as exc:
+                failed += 1
+                log.warning("Headless render απέτυχε (%s): %s", row["mark"], exc)
+                progress(f"  ✗ {label}: σφάλμα browser")
+                continue
+            if pdf is None:
+                skipped += 1
+                progress(f"  ⧉ {label}: παραμένει μόνο online (δεν στοιχειοθετείται)")
+                continue
+            doc = _doc_from_row(row)
+            path = resolve_path(settings.storage_root, row["client_vat"], doc,
+                                client_label=row["client_label"])
+            size, sha = write_atomic(path, pdf)
+            repo.mark_downloaded(
+                conn, row["client_id"], row["mark"],
+                str(path.relative_to(settings.storage_root)), size, sha,
+            )
+            conn.commit()
+            saved += 1
+            progress(f"  ✓ {label}: PDF ({size:,} B)")
+    return saved, skipped, failed

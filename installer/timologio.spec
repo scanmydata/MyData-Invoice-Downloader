@@ -35,7 +35,13 @@ a = Analysis(
         for path in (ICON, os.path.join(SPECPATH, "logo.svg"))
         if os.path.exists(path)
     ] + TZDATA,
-    hiddenimports=collect_submodules("timologio") + ["tzdata"],
+    # websocket-client (import name «websocket») το φορτώνει το headless module
+    # με τοπικό import, οπότε το PyInstaller δεν το βλέπει από το στατικό δέντρο.
+    hiddenimports=(
+        collect_submodules("timologio")
+        + collect_submodules("websocket")
+        + ["tzdata"]
+    ),
     hookspath=[],
     runtime_hooks=[],
     # Ό,τι σέρνει το PySide6 και δεν χρησιμοποιούμε. Χωρίς αυτό ο φάκελος
