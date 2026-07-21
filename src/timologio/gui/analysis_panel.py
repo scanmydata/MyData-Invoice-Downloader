@@ -219,6 +219,12 @@ class AnalysisPanel(QScrollArea):
         self._tile(tiles, StatTile(str(a.no_provider_url), "Χωρίς PDF", CURRENT.muted,
                                    "no_provider_url",
                                    "Δεν πέρασαν από κανάλι παρόχου· αποθηκεύτηκε το XML"))
+        if a.viewer_only:
+            self._tile(tiles, StatTile(
+                str(a.viewer_only), "Μόνο online", CURRENT.accent, "viewer_only",
+                "Ο πάροχος (Epsilon, e-timologiera κ.ά.) δείχνει το παραστατικό "
+                "μόνο online — δεν υπάρχει PDF για λήψη. Κλικ για τη λίστα· από "
+                "εκεί ανοίγετε την προβολή του παρόχου."))
         if a.failed:
             self._tile(tiles, StatTile(str(a.failed), "Σφάλματα", CURRENT.bad, "failed",
                                        "Απέτυχε η λήψη — κλικ για τη λίστα"))

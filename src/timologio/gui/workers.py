@@ -27,7 +27,7 @@ class SyncWorker(QObject):
     client_started = Signal(str, str)      # vat, label
     client_finished = Signal(str, int, int, int)  # vat, found, pdfs, failed
     message = Signal(str)
-    totals = Signal(int, int, int, int)    # found, pdfs, no_url, failed
+    totals = Signal(int, int, int, int, int)  # found, pdfs, no_url, viewer_only, failed
     finished = Signal(bool)                # ολοκληρώθηκε χωρίς ακύρωση
     failed = Signal(str)
     busy = Signal(str)                     # άλλος υπολογιστής κατεβάζει ήδη
@@ -82,7 +82,7 @@ class SyncWorker(QObject):
             crypto = Crypto(settings.enckey_path)
 
             run_id = repo.start_run(conn, self._date_from, self._date_to, len(self._vats))
-            found = pdfs = no_url = failed = 0
+            found = pdfs = no_url = viewer_only = failed = 0
 
             for vat in self._vats:
                 if self._cancel.is_set():
@@ -107,6 +107,7 @@ class SyncWorker(QObject):
                 found += stats.docs_found
                 pdfs += stats.pdfs_ok
                 no_url += stats.no_url
+                viewer_only += stats.viewer_only
                 failed += stats.failed
                 repo.log_event(
                     conn, run_id, client_vat=client.vat, event="sync",
@@ -116,7 +117,7 @@ class SyncWorker(QObject):
                 self.client_finished.emit(
                     client.vat, stats.docs_found, stats.pdfs_ok, stats.failed
                 )
-                self.totals.emit(found, pdfs, no_url, failed)
+                self.totals.emit(found, pdfs, no_url, viewer_only, failed)
 
             repo.finish_run(conn, run_id, "aborted" if self._cancel.is_set() else "completed")
             conn.close()

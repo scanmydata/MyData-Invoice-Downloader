@@ -8,8 +8,8 @@ import subprocess
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QSize, Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QSettings, QSize, Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -64,6 +64,7 @@ _COLS: list[tuple[str, int, str]] = [
 _STATUS_SHORT = {
     DocStatus.DOWNLOADED: "Ελήφθη",
     DocStatus.NO_PROVIDER_URL: "Χωρίς PDF",
+    DocStatus.VIEWER_ONLY: "Μόνο online",
     DocStatus.FAILED_RETRYABLE: "Σφάλμα",
     DocStatus.FAILED_PERMANENT: "Σφάλμα",
     DocStatus.SKIPPED_NO_KEY: "Χωρίς κλειδί",
@@ -87,6 +88,7 @@ STATUS_FILTERS: list[tuple[str, str]] = [
     ("all", "Όλα"),
     ("downloaded", "Ελήφθησαν PDF"),
     ("no_provider_url", "Χωρίς PDF παρόχου"),
+    ("viewer_only", "Μόνο online προβολή"),
     ("failed", "Σφάλματα"),
     ("pending", "Σε αναμονή"),
 ]
@@ -680,6 +682,10 @@ class DocumentsView(QWidget):
         button = QPushButton()
         button.setObjectName("rowButton")
         button.setFixedSize(QSize(26, 24))
+        online_url = (
+            row["downloading_invoice_url"]
+            if row["status"] == DocStatus.VIEWER_ONLY.value else ""
+        )
         if path and (self._settings.storage_root / path).exists():
             is_pdf = bool(row["local_path"])
             button.setIcon(
@@ -691,6 +697,15 @@ class DocumentsView(QWidget):
                 else "Άνοιγμα του XML (δεν υπάρχει PDF παρόχου)"
             )
             button.clicked.connect(lambda _=False, p=path: self._open(p))
+        elif online_url:
+            # Ο πάροχος δεν δίνει PDF, μόνο online προβολή: ανοίγει στον browser.
+            button.setIcon(icon("link", CURRENT.accent))
+            button.setToolTip(
+                "Προβολή στον πάροχο (δεν υπάρχει PDF για λήψη — μόνο online)"
+            )
+            button.clicked.connect(
+                lambda _=False, u=online_url: QDesktopServices.openUrl(QUrl(u))
+            )
         else:
             button.setIcon(icon("cancel", CURRENT.muted))
             button.setEnabled(False)
@@ -729,6 +744,7 @@ def _status_color(status: DocStatus) -> str:
     return {
         DocStatus.DOWNLOADED: CURRENT.ok,
         DocStatus.NO_PROVIDER_URL: CURRENT.muted,
+        DocStatus.VIEWER_ONLY: CURRENT.accent,
         DocStatus.FAILED_RETRYABLE: CURRENT.warn,
         DocStatus.FAILED_PERMANENT: CURRENT.bad,
         DocStatus.SKIPPED_NO_KEY: CURRENT.bad,

@@ -38,6 +38,7 @@ class UpdateInfo:
     asset_url: str = ""   # άμεσος σύνδεσμος του setup.exe (κενό αν λείπει)
     asset_name: str = ""
     asset_size: int = 0
+    notes: str = ""       # σημειώσεις έκδοσης (Markdown από το GitHub release)
 
     @property
     def is_newer(self) -> bool:
@@ -80,6 +81,7 @@ def check(current: str, timeout: int = 8) -> UpdateInfo:
         asset_url=asset_url,
         asset_name=asset_name,
         asset_size=asset_size,
+        notes=str(data.get("body") or "").strip(),
     )
 
 

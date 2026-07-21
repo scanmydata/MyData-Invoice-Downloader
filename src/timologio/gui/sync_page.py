@@ -357,8 +357,13 @@ class SyncPage(QWidget):
         self._fill()
 
     def _emit_target(self) -> None:
-        self.set_target(len(self.checked), len(getattr(self, "_rows", [])))
-        self.selection_changed.emit(len(self.checked))
+        # Η κοινή επιλογή (self.checked) μπορεί να περιέχει και πελάτες χωρίς
+        # κλειδί — επιλέξιμους για διαγραφή στη σελίδα Πελατών, αλλά όχι για
+        # λήψη. Εδώ μετράμε μόνο όσους όντως κατεβαίνουν (είναι στα _rows).
+        ready = {r["vat"] for r in getattr(self, "_rows", [])}
+        downloadable = len(self.checked & ready)
+        self.set_target(downloadable, len(getattr(self, "_rows", [])))
+        self.selection_changed.emit(downloadable)
 
     def set_target(self, selected: int, ready_total: int) -> None:
         """Δείχνει ρητά τι θα γίνει, πριν πατηθεί το κουμπί."""

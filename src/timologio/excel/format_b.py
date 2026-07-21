@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from ..models import Client
 from ..normalize import norm_afm, norm_text
-from .aliases import field_for
+from .aliases import field_for, is_secondary_key_header, looks_like_key
 from .reader import Sheet
 
 #: Πόσες γραμμές ψάχνουμε για τη γραμμή επικεφαλίδων.
@@ -34,6 +34,10 @@ def find_header(sheet: Sheet) -> tuple[int, dict[str, str]] | None:
 
     Απαιτεί ΑΦΜ και τουλάχιστον ένα από τα myDATA πεδία — αλλιώς είναι άλλο
     φύλλο (π.χ. το Sheet (2)).
+
+    Καταγράφει και τη στήλη «Συνθηματικό myData» (αν υπάρχει) στο ειδικό κλειδί
+    ``mydata_key_2``: κανονικά είναι συνθηματικό web, αλλά συχνά (taxsystem)
+    κρύβει κατά λάθος το κλειδί API. Το parse το χρησιμοποιεί μόνο ως εφεδρεία.
     """
     for index in range(min(len(sheet.rows), _HEADER_SCAN)):
         mapping: dict[str, str] = {}
@@ -41,6 +45,8 @@ def find_header(sheet: Sheet) -> tuple[int, dict[str, str]] | None:
             field = field_for(value)
             if field and field not in mapping:
                 mapping[field] = column
+            elif "mydata_key_2" not in mapping and is_secondary_key_header(value):
+                mapping["mydata_key_2"] = column
         if "afm" in mapping and ("mydata_user" in mapping or "mydata_key" in mapping):
             return index, mapping
     return None
@@ -71,12 +77,21 @@ def parse(sheets: list[Sheet], source: str = "") -> list[Client]:
             if first:
                 label = f"{label} {first}".strip()
 
+        key = norm_text(row.get(mapping.get("mydata_key", ""), ""))
+        # Εφεδρεία: αν λείπει (ή δεν έχει μορφή κλειδιού) το κανονικό «Api myData»
+        # αλλά η στήλη «Συνθηματικό myData» κρύβει καθαρό 32-hex κλειδί, το
+        # χρησιμοποιούμε — αλλιώς αυτοί οι πελάτες έμεναν «χωρίς κλειδί» αδίκως.
+        if not looks_like_key(key) and "mydata_key_2" in mapping:
+            alt = norm_text(row.get(mapping["mydata_key_2"], ""))
+            if looks_like_key(alt):
+                key = alt
+
         clients.append(
             Client(
                 vat=vat,
                 label=label,
                 mydata_user=norm_text(row.get(mapping.get("mydata_user", ""), "")),
-                mydata_key=norm_text(row.get(mapping.get("mydata_key", ""), "")),
+                mydata_key=key,
                 source_file=source,
             )
         )

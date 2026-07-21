@@ -33,6 +33,15 @@ def test_pdf_url_preserves_other_formats() -> None:
         assert pdf_url(f"https://x.gr/p/a{suffix}") == f"https://x.gr/p/a{suffix}"
 
 
+def test_pdf_url_leaves_query_string_urls_untouched() -> None:
+    """Megasoft: …/invoiceinspect/qr?QrCode=ABC. Το /pdf θα κολλούσε ΜΕΣΑ στο
+    query (?QrCode=ABC/pdf) και θα κατέστρεφε τον σύνδεσμο."""
+    url = "https://invoicelink.megasoft.gr/invoiceinspect/qr?QrCode=ABC123=="
+    assert pdf_url(url) == url
+    # Ούτε το trailing slash του query πειράζεται.
+    assert pdf_url(url + "/") == url + "/"
+
+
 # --------------------------------------------------------------------------
 # storage
 # --------------------------------------------------------------------------

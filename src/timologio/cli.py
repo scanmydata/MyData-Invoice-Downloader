@@ -106,7 +106,8 @@ def _run_sync(args: argparse.Namespace, settings, lock) -> int:
     run_id = repo.start_run(conn, date_from, date_to, len(rows))
     print(f"Συγχρονισμός {len(rows)} πελατών, {date_from} - {date_to}\n")
 
-    totals = {"found": 0, "pdf": 0, "no_url": 0, "failed": 0, "skipped": 0}
+    totals = {"found": 0, "pdf": 0, "no_url": 0, "viewer_only": 0, "failed": 0,
+              "skipped": 0}
     for row in rows:
         client = repo.get_client(conn, row["vat"], crypto)
         assert client is not None
@@ -130,6 +131,7 @@ def _run_sync(args: argparse.Namespace, settings, lock) -> int:
         totals["found"] += stats.docs_found
         totals["pdf"] += stats.pdfs_ok
         totals["no_url"] += stats.no_url
+        totals["viewer_only"] += stats.viewer_only
         totals["failed"] += stats.failed
         repo.log_event(
             conn, run_id, client_vat=client.vat, event="sync",
@@ -140,7 +142,8 @@ def _run_sync(args: argparse.Namespace, settings, lock) -> int:
     repo.finish_run(conn, run_id)
     print(
         f"\nΣύνολο: {totals['found']} παραστατικά | {totals['pdf']} PDF | "
-        f"{totals['no_url']} χωρίς PDF παρόχου | {totals['failed']} σφάλματα"
+        f"{totals['no_url']} χωρίς PDF παρόχου | "
+        f"{totals['viewer_only']} μόνο online | {totals['failed']} σφάλματα"
     )
     print(f"Αρχεία: {settings.storage_root}")
     return 0

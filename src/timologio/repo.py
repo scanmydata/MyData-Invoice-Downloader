@@ -361,6 +361,20 @@ def mark_xml_saved(conn: sqlite3.Connection, client_id: int, mark: str, path: st
     )
 
 
+def mark_viewer_only(conn: sqlite3.Connection, client_id: int, mark: str) -> None:
+    """Ο πάροχος δίνει σελίδα προβολής, όχι PDF (Epsilon 3rd-party, e-timologiera…).
+
+    Δεν είναι σφάλμα και δεν ξαναδοκιμάζεται: απλώς δεν υπάρχει PDF να κατεβεί.
+    Ο σύνδεσμος (downloading_invoice_url) μένει ώστε ο χρήστης να ανοίγει την
+    προβολή στον πάροχο. Καθαρίζουμε τυχόν παλιό μήνυμα σφάλματος.
+    """
+    conn.execute(
+        """UPDATE documents SET status='viewer_only', error_text='',
+           updated_at=datetime('now') WHERE client_id=? AND mark=?""",
+        (client_id, mark),
+    )
+
+
 def mark_failed(
     conn: sqlite3.Connection,
     client_id: int,

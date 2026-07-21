@@ -208,6 +208,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "ALTER TABLE documents ADD COLUMN classification TEXT NOT NULL DEFAULT 'unknown'"
         )
 
+    # Επαναταξινόμηση των «οριστικών σφαλμάτων» που στην πραγματικότητα είναι
+    # παραστατικά μόνο-online (ο πάροχος έδωσε σελίδα προβολής αντί για PDF).
+    # Δεν ήταν ποτέ σφάλμα· ο νέος κώδικας τα σημειώνει ως viewer_only, και εδώ
+    # καθαρίζουμε ό,τι έμεινε από παλιότερες εκδόσεις. Idempotent.
+    conn.execute(
+        """UPDATE documents SET status='viewer_only', error_text=''
+           WHERE status='failed_permanent'
+             AND error_text LIKE 'Ο πάροχος επέστρεψε σελίδα%'"""
+    )
+
 
 def init_db(db_path: Path) -> sqlite3.Connection:
     conn = connect(db_path)

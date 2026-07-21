@@ -137,7 +137,7 @@ class MainWindow(QMainWindow):
         self._worker: SyncWorker | None = None
         self._checked: set[str] = set()
         self._pinned_vat: str | None = None
-        self._last_totals: tuple[int, int, int, int] | None = None
+        self._last_totals: tuple[int, int, int, int, int] | None = None
         self._last_db_mtime: float = 0.0
         self._tooltips_on = True
         self._tour: Tour | None = None
@@ -596,10 +596,12 @@ class MainWindow(QMainWindow):
             is_ready = row["status"] == "ready"
 
             check = QTableWidgetItem()
+            # Επιλέξιμοι ΟΛΟΙ, ακόμη κι όσοι δεν έχουν κλειδί: το τσεκάρισμα
+            # χρησιμεύει και για μαζική διαγραφή, όχι μόνο για λήψη. Όσοι δεν
+            # έχουν κλειδί απλώς παραλείπονται από την ίδια τη λήψη (on_sync).
             check.setFlags(
-                (Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
-                 | Qt.ItemFlag.ItemIsSelectable)
-                if is_ready else Qt.ItemFlag.ItemIsSelectable
+                Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
             )
             check.setCheckState(
                 Qt.CheckState.Checked if row["vat"] in self._checked
@@ -607,7 +609,10 @@ class MainWindow(QMainWindow):
             )
             check.setData(Qt.ItemDataRole.UserRole, row["vat"])
             if not is_ready:
-                check.setToolTip("Χωρίς κλειδί API — δεν μπορεί να κατεβάσει")
+                check.setToolTip(
+                    "Χωρίς κλειδί API: δεν κατεβάζει, αλλά επιλέγεται για "
+                    "διαγραφή ή άλλες μαζικές ενέργειες"
+                )
             self.table.setItem(i, _COL_CHECK, check)
 
             last_text, last_key = last_dl.get(row["id"], ("—", 0.0))
@@ -744,14 +749,21 @@ class MainWindow(QMainWindow):
 
     def _update_selcount(self) -> None:
         n = len(self._checked)
-        if n:
-            self.lbl_selcount.setText(f"✓ {n} επιλεγμένοι για λήψη")
-            self.lbl_selcount.setStyleSheet(
-                f"color:{CURRENT.accent}; font-weight:600;"
-            )
-        else:
+        if not n:
             self.lbl_selcount.setText("Κανένας επιλεγμένος — θα κατέβουν όλοι οι διαθέσιμοι")
             self.lbl_selcount.setStyleSheet(f"color:{CURRENT.muted};")
+            return
+        ready = {r["vat"] for r in repo.list_clients(self.conn, only_ready=True)}
+        no_key = sum(1 for v in self._checked if v not in ready)
+        if no_key:
+            # Κάποιοι επιλεγμένοι δεν έχουν κλειδί: δεν κατεβαίνουν, αλλά μετρούν
+            # για μαζική διαγραφή. Το λέμε ρητά ώστε να μη μπερδευτεί ο αριθμός.
+            self.lbl_selcount.setText(
+                f"✓ {n} επιλεγμένοι ({n - no_key} για λήψη, {no_key} χωρίς κλειδί)"
+            )
+        else:
+            self.lbl_selcount.setText(f"✓ {n} επιλεγμένοι για λήψη")
+        self.lbl_selcount.setStyleSheet(f"color:{CURRENT.accent}; font-weight:600;")
 
     def _on_sync_selection(self, _: int) -> None:
         """Η επιλογή άλλαξε από τη σελίδα Λήψης."""
@@ -774,8 +786,9 @@ class MainWindow(QMainWindow):
             else:
                 self._checked.discard(vat)
         self.table.blockSignals(False)
-        ready = sum(1 for r in repo.list_clients(self.conn) if r["status"] == "ready")
-        self.sync_page.set_target(len(self._checked), ready)
+        ready_vats = {r["vat"] for r in repo.list_clients(self.conn, only_ready=True)}
+        downloadable = len(self._checked & ready_vats)
+        self.sync_page.set_target(downloadable, len(ready_vats))
         self._update_selcount()
         self.reload_clients()
 
@@ -1361,9 +1374,12 @@ class MainWindow(QMainWindow):
     def on_sync(self) -> None:
         if self._thread is not None:
             return
-        vats = sorted(self._checked)
+        # Οι επιλεγμένοι μπορεί να περιλαμβάνουν και πελάτες χωρίς κλειδί (είναι
+        # επιλέξιμοι για διαγραφή)· η λήψη κρατά μόνο όσους έχουν κλειδί.
+        ready = {r["vat"] for r in repo.list_clients(self.conn, only_ready=True)}
+        vats = [v for v in sorted(self._checked) if v in ready]
         if not vats:
-            vats = [r["vat"] for r in repo.list_clients(self.conn, only_ready=True)]
+            vats = sorted(ready)
         if not vats:
             QMessageBox.information(
                 self, "Κανένας πελάτης",
@@ -1692,9 +1708,13 @@ class MainWindow(QMainWindow):
         self._log(f"   {vat}: {found} παραστατικά, {pdfs} PDF{note}")
         self.reload_clients()
 
-    def _on_totals(self, found: int, pdfs: int, no_url: int, failed: int) -> None:
-        self._last_totals = (found, pdfs, no_url, failed)
+    def _on_totals(
+        self, found: int, pdfs: int, no_url: int, viewer_only: int, failed: int
+    ) -> None:
+        self._last_totals = (found, pdfs, no_url, viewer_only, failed)
         text = f"{found} παραστατικά · {pdfs} PDF · {no_url} χωρίς PDF"
+        if viewer_only:
+            text += f" · {viewer_only} μόνο online"
         if failed:
             text += f" · {failed} σφάλματα"
         self.progress_stats.setText(text)
@@ -1712,10 +1732,10 @@ class MainWindow(QMainWindow):
         if completed:
             self._show_sync_summary(totals)
 
-    def _show_sync_summary(self, totals: tuple[int, int, int, int] | None) -> None:
+    def _show_sync_summary(self, totals: tuple[int, int, int, int, int] | None) -> None:
         """Popup επιτυχίας στο τέλος της λήψης — αλλιώς ο χρήστης δεν ξέρει αν
         τελείωσε ή αν απλώς σταμάτησε η μπάρα."""
-        found, pdfs, no_url, failed = totals or (0, 0, 0, 0)
+        found, pdfs, no_url, viewer_only, failed = totals or (0, 0, 0, 0, 0)
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning if failed else QMessageBox.Icon.Information)
         box.setWindowTitle("Η λήψη ολοκληρώθηκε")
@@ -1724,7 +1744,14 @@ class MainWindow(QMainWindow):
             f"<b>{pdfs}</b> PDF κατέβηκαν",
         ]
         if no_url:
-            lines.append(f"{no_url} χωρίς PDF παρόχου")
+            lines.append(f"{no_url} χωρίς PDF παρόχου (αποθηκεύτηκε το XML)")
+        if viewer_only:
+            # Ρητά «δεν είναι σφάλμα»: αλλιώς ο χρήστης το εκλαμβάνει ως αποτυχία.
+            lines.append(
+                f'<span style="color:{CURRENT.accent};">{viewer_only} μόνο online '
+                "προβολή στον πάροχο — δεν υπάρχει PDF για λήψη (δεν είναι σφάλμα)"
+                "</span>"
+            )
         if failed:
             lines.append(
                 f'<span style="color:{CURRENT.bad};">{failed} με σφάλμα '

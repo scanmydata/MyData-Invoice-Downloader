@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import re
+
 from ..normalize import norm_header
 
 #: πεδίο -> κανονικοποιημένες επικεφαλίδες που το ορίζουν
@@ -54,6 +56,21 @@ NEVER_MYDATA: dict[str, str] = {
     "συνθηματικο mydata": "συνθηματικό web myDATA, όχι το API key",
 }
 
+#: Στήλες που ΚΑΝΟΝΙΚΑ δεν είναι το κλειδί API, αλλά κάποιοι λογιστές (ιδίως σε
+#: εξαγωγές taxsystem) καταχωρούν εκεί κατά λάθος το σωστό κλειδί myDATA. Δεν τις
+#: διαβάζουμε ως κλειδί άμεσα — μόνο αν η κανονική στήλη «Api myData» λείπει ΚΑΙ
+#: η τιμή εδώ μοιάζει αδιαμφισβήτητα με κλειδί (32 hex). Βλ. format_b.parse.
+SECONDARY_KEY_HEADERS: set[str] = {
+    "συνθηματικο mydata",
+    "συνθηματικο my data",
+}
+
+#: Το κλειδί myDATA είναι GUID χωρίς παύλες: ακριβώς 32 δεκαεξαδικά. Ένα
+#: συνθηματικό web (που κανονικά ζει σε αυτή τη στήλη) δεν έχει αυτή τη μορφή,
+#: οπότε το ταίριασμα είναι ασφαλές σημάδι ότι μπήκε το κλειδί κατά λάθος.
+_KEY_SHAPE = re.compile(r"^[0-9a-fA-F]{32}$")
+
+
 _LOOKUP: dict[str, str] = {}
 for _field, _headers in FIELD_ALIASES.items():
     for _header in _headers:
@@ -69,3 +86,13 @@ def field_for(header: object) -> str | None:
     if not key or key in NEVER_MYDATA:
         return None
     return _LOOKUP.get(key)
+
+
+def is_secondary_key_header(header: object) -> bool:
+    """Αληθές αν η στήλη ΜΠΟΡΕΙ να κρύβει κατά λάθος καταχωρημένο κλειδί myDATA."""
+    return norm_header(header) in SECONDARY_KEY_HEADERS
+
+
+def looks_like_key(value: object) -> bool:
+    """Αληθές αν η τιμή έχει τη μορφή κλειδιού myDATA (32 hex)."""
+    return bool(_KEY_SHAPE.match(str(value or "").strip()))

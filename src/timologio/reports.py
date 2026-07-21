@@ -45,6 +45,7 @@ class ClientAnalysis:
     total: int = 0
     downloaded: int = 0
     no_provider_url: int = 0
+    viewer_only: int = 0
     failed: int = 0
     pending: int = 0
     incoming: int = 0
@@ -84,6 +85,7 @@ def analyse_client(conn: sqlite3.Connection, vat: str) -> ClientAnalysis | None:
         """SELECT COUNT(*) total,
                   SUM(status='downloaded') downloaded,
                   SUM(status='no_provider_url') no_url,
+                  SUM(status='viewer_only') viewer_only,
                   SUM(status IN ('failed_retryable','failed_permanent')) failed,
                   SUM(status='pending') pending,
                   SUM(direction IN ('incoming','both')) incoming,
@@ -103,6 +105,7 @@ def analyse_client(conn: sqlite3.Connection, vat: str) -> ClientAnalysis | None:
     out.total = totals["total"] or 0
     out.downloaded = totals["downloaded"] or 0
     out.no_provider_url = totals["no_url"] or 0
+    out.viewer_only = totals["viewer_only"] or 0
     out.failed = totals["failed"] or 0
     out.pending = totals["pending"] or 0
     out.incoming = totals["incoming"] or 0
@@ -244,6 +247,7 @@ DOC_FILTERS: dict[str, str] = {
     "all": "",
     "downloaded": "d.status='downloaded'",
     "no_provider_url": "d.status='no_provider_url'",
+    "viewer_only": "d.status='viewer_only'",
     "failed": "d.status IN ('failed_retryable','failed_permanent')",
     "pending": "d.status='pending'",
     "unclassified": "d.classification='unclassified'",

@@ -129,6 +129,11 @@ _SVG: dict[str, str] = {
     ),
     "income": '<polyline points="17 11 12 6 7 11"/><line x1="12" y1="6" x2="12" y2="18"/>',
     "expense": '<polyline points="7 13 12 18 17 13"/><line x1="12" y1="18" x2="12" y2="6"/>',
+    # Εξωτερικός σύνδεσμος: «άνοιγμα στον browser» για τα μόνο-online παραστατικά.
+    "link": (
+        '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'
+        '<polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>'
+    ),
 }
 
 _TEMPLATE = (

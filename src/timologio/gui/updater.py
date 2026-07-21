@@ -23,7 +23,16 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QLabel,
+    QMessageBox,
+    QProgressDialog,
+    QTextBrowser,
+    QVBoxLayout,
+)
 
 from .. import updates
 from ..backup import create_backup
@@ -90,32 +99,60 @@ class Updater(QObject):
 
     # ------------------------------------------------------------ προσφορά
     def offer(self, info: updates.UpdateInfo) -> None:
-        """Δείχνει την προσφορά ενημέρωσης. Καλείται μόνο όταν υπάρχει νεότερη."""
-        box = QMessageBox(self._window)
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setWindowTitle("Διαθέσιμη ενημέρωση")
-        box.setText(
-            f"Υπάρχει νεότερη έκδοση: <b>{info.latest}</b><br>"
-            f"Έχετε την <b>{info.current}</b>."
-        )
+        """Δείχνει την προσφορά ενημέρωσης με τις σημειώσεις της νέας έκδοσης.
 
+        Καλείται μόνο όταν υπάρχει νεότερη έκδοση.
+        """
         auto = can_self_update() and info.can_auto_install
-        if auto:
-            box.setInformativeText(
-                "Θα κρατηθεί <b>αντίγραφο ασφαλείας</b> της βάσης, θα κατέβει "
-                "και θα εγκατασταθεί η νέα έκδοση, και η εφαρμογή θα ανοίξει "
-                "ξανά. Τα δεδομένα σας δεν αγγίζονται."
-            )
-            go = box.addButton("Ενημέρωση τώρα", QMessageBox.ButtonRole.AcceptRole)
-            box.addButton("Αργότερα", QMessageBox.ButtonRole.RejectRole)
-        else:
-            # Πηγαίος κώδικας ή installer που λείπει: μόνο σύνδεσμος.
-            go = box.addButton("Άνοιγμα σελίδας λήψης",
-                               QMessageBox.ButtonRole.AcceptRole)
-            box.addButton("Αργότερα", QMessageBox.ButtonRole.RejectRole)
+        dialog = QDialog(self._window)
+        dialog.setWindowTitle("Διαθέσιμη ενημέρωση")
+        dialog.setMinimumWidth(560)
+        root = QVBoxLayout(dialog)
+        root.setSpacing(10)
 
-        box.exec()
-        if box.clickedButton() != go:
+        head = QLabel(
+            f"Υπάρχει νεότερη έκδοση: <b>{info.latest}</b>  "
+            f"(έχετε την {info.current})."
+        )
+        head.setTextFormat(Qt.TextFormat.RichText)
+        head.setWordWrap(True)
+        root.addWidget(head)
+
+        # --- Σημειώσεις έκδοσης (τι νέο υπάρχει), σε κυλιόμενο πλαίσιο.
+        if info.notes:
+            caption = QLabel("Τι νέο υπάρχει σε αυτή την έκδοση:")
+            caption.setStyleSheet("font-weight:600;")
+            root.addWidget(caption)
+            notes = QTextBrowser()
+            notes.setOpenExternalLinks(True)
+            notes.setMarkdown(info.notes)
+            notes.setMinimumHeight(220)
+            root.addWidget(notes, 1)
+
+        info_text = QLabel(
+            "Θα κρατηθεί <b>αντίγραφο ασφαλείας</b> της βάσης, θα κατέβει και θα "
+            "εγκατασταθεί η νέα έκδοση, και η εφαρμογή θα ανοίξει ξανά. Τα "
+            "δεδομένα σας δεν αγγίζονται."
+            if auto else
+            "Θα ανοίξει η σελίδα λήψης στον browser για να κατεβάσετε τη νέα "
+            "έκδοση."
+        )
+        info_text.setTextFormat(Qt.TextFormat.RichText)
+        info_text.setWordWrap(True)
+        info_text.setObjectName("muted")
+        root.addWidget(info_text)
+
+        buttons = QDialogButtonBox()
+        buttons.addButton(
+            "Ενημέρωση τώρα" if auto else "Άνοιγμα σελίδας λήψης",
+            QDialogButtonBox.ButtonRole.AcceptRole,
+        )
+        buttons.addButton("Αργότερα", QDialogButtonBox.ButtonRole.RejectRole)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        root.addWidget(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         if auto:
             self._start(info)

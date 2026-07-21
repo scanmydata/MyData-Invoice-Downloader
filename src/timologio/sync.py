@@ -20,6 +20,7 @@ from .config import Settings
 from .crypto import Crypto
 from .download import (
     HostPool,
+    NotAPdf,
     ProviderDownloader,
     ProviderError,
     ProviderRateLimited,
@@ -250,6 +251,13 @@ def _persist_outcome(
 ) -> None:
     assert client.id is not None
     mark = row["mark"]
+
+    if isinstance(outcome, NotAPdf):
+        # Δεν είναι σφάλμα: ο πάροχος προσφέρει μόνο online προβολή, όχι PDF.
+        repo.mark_viewer_only(conn, client.id, mark)
+        stats.viewer_only += 1
+        progress(f"  ⧉ {mark}: μόνο online προβολή στον πάροχο")
+        return
 
     if isinstance(outcome, ProviderError):
         if isinstance(outcome, ProviderRateLimited):

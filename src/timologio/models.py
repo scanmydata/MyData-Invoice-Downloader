@@ -10,6 +10,11 @@ class DocStatus(StrEnum):
     PENDING = "pending"
     DOWNLOADED = "downloaded"
     NO_PROVIDER_URL = "no_provider_url"
+    # Ο πάροχος δίνει σύνδεσμο, αλλά αυτός ανοίγει σελίδα προβολής (SPA/DocViewer)
+    # αντί για PDF — π.χ. Epsilon 3rd-party, e-timologiera. ΔΕΝ είναι σφάλμα: δεν
+    # υπάρχει PDF να κατεβεί, μόνο online προβολή. Κρατιέται χωριστά ώστε να μη
+    # μετριέται ως αποτυχία και να προσφέρεται «άνοιγμα στον πάροχο».
+    VIEWER_ONLY = "viewer_only"
     FAILED_RETRYABLE = "failed_retryable"
     FAILED_PERMANENT = "failed_permanent"
     SKIPPED_NO_KEY = "skipped_no_key"
@@ -57,6 +62,7 @@ STATUS_LABELS_EL = {
     DocStatus.PENDING: "Σε αναμονή",
     DocStatus.DOWNLOADED: "Ελήφθη",
     DocStatus.NO_PROVIDER_URL: "Χωρίς PDF παρόχου",
+    DocStatus.VIEWER_ONLY: "Μόνο online προβολή",
     DocStatus.FAILED_RETRYABLE: "Προσωρινό σφάλμα",
     DocStatus.FAILED_PERMANENT: "Οριστικό σφάλμα",
     DocStatus.SKIPPED_NO_KEY: "Λείπει κλειδί API",
@@ -120,5 +126,6 @@ class RunStats:
     docs_found: int = 0
     pdfs_ok: int = 0
     no_url: int = 0
+    viewer_only: int = 0
     failed: int = 0
     skipped: int = 0
