@@ -148,3 +148,45 @@ def test_update_is_newer(current, latest, expected):
     from timologio.updates import UpdateInfo
 
     assert UpdateInfo(current, latest, "http://x").is_newer is expected
+
+
+def test_can_auto_install_needs_an_asset():
+    from timologio.updates import UpdateInfo
+
+    assert UpdateInfo("0.1", "0.2", "u", asset_url="http://a/s.exe").can_auto_install
+    assert not UpdateInfo("0.1", "0.2", "u").can_auto_install
+
+
+# --- auto-updater script ---------------------------------------------------
+
+
+def test_updater_script_waits_installs_relaunches():
+    from timologio.updates import build_updater_script
+
+    script = build_updater_script(
+        pid=4321,
+        setup=Path(r"C:\Temp\setup.exe"),
+        app_exe=Path(r"C:\Programs\App\App.exe"),
+        data_dir=Path(r"C:\Users\x\Documents\Παραστατικά myDATA"),
+        role="terminal",
+        tray=False,
+    )
+    # Σειρά: περίμενε το κλείσιμο -> εγκατέστησε -> ξαναάνοιξε.
+    assert script.index("Wait-Process -Id 4321") < script.index("setup.exe")
+    assert script.index("Start-Process -Wait") < script.index(r"C:\Programs\App\App.exe")
+    # Οι τρέχουσες ρυθμίσεις περνούν στον installer ώστε να μη χαθούν.
+    assert "/ROLE=terminal" in script
+    assert "/TRAY=0" in script
+    assert "Παραστατικά myDATA" in script
+    assert "/SILENT" in script
+
+
+def test_updater_script_escapes_quotes_in_paths():
+    from timologio.updates import build_updater_script
+
+    script = build_updater_script(
+        pid=1, setup=Path(r"C:\O'Brien\setup.exe"), app_exe=Path(r"C:\a\App.exe"),
+        data_dir=Path(r"C:\d"), role="standalone", tray=True,
+    )
+    # Το μονό εισαγωγικό διπλασιάζεται για ασφαλές PowerShell literal.
+    assert "C:\\O''Brien\\setup.exe" in script

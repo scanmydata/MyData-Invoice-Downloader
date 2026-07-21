@@ -13,8 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -34,6 +33,7 @@ from .. import presence, sharing, updates
 from ..config import ROLE_LABELS_EL
 from ..db import is_network_path
 from ..locking import SyncLock
+from . import updater
 from .icons import icon
 from .theme import CURRENT
 from .widgets import ToggleSwitch
@@ -44,25 +44,6 @@ REFRESH_MS = 10_000
 
 def _dot(online: bool) -> str:
     return "🟢" if online else "⚪"
-
-
-class _UpdateWorker(QObject):
-    """Ο έλεγχος ενημερώσεων αγγίζει το δίκτυο — τρέχει εκτός GUI thread."""
-
-    ok = Signal(str, str, str, bool)  # current, latest, url, is_newer
-    failed = Signal(str)
-
-    def __init__(self, current: str) -> None:
-        super().__init__()
-        self._current = current
-
-    def run(self) -> None:
-        try:
-            info = updates.check(self._current)
-        except Exception as exc:  # δίκτυο/GitHub κάτω — δεν είναι κρίσιμο
-            self.failed.emit(str(exc))
-            return
-        self.ok.emit(info.current, info.latest, info.url, info.is_newer)
 
 
 class ControlPanel(QWidget):
@@ -146,12 +127,13 @@ class ControlPanel(QWidget):
 
     # -------------------------------------------------------- ενημερώσεις
     def check_updates(self) -> None:
-        """Ρωτά το GitHub σε νήμα, ώστε να μην παγώσει το παράθυρο αν αργεί."""
+        """Χειροκίνητος έλεγχος (κουμπί). Δίνει πάντα απάντηση, ακόμη κι όταν
+        είμαστε ενημερωμένοι — αλλιώς ο χρήστης δεν ξέρει αν έγινε ο έλεγχος."""
         self.btn_updates.setEnabled(False)
         self.btn_updates.setText("Έλεγχος…")
 
         self._upd_thread = QThread(self)
-        self._upd_worker = _UpdateWorker(self._version)
+        self._upd_worker = updater.CheckWorker(self._version)
         self._upd_worker.moveToThread(self._upd_thread)
         self._upd_thread.started.connect(self._upd_worker.run)
         self._upd_worker.ok.connect(self._on_update_result)
@@ -168,28 +150,14 @@ class ControlPanel(QWidget):
         self.btn_updates.setEnabled(True)
         self.btn_updates.setText("Έλεγχος για ενημερώσεις")
 
-    def _on_update_result(self, current: str, latest: str, url: str, is_newer: bool) -> None:
+    def _on_update_result(self, info) -> None:
         self._stop_upd_thread()
-        if is_newer:
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Icon.Information)
-            box.setWindowTitle("Διαθέσιμη ενημέρωση")
-            box.setText(
-                f"Υπάρχει νεότερη έκδοση: <b>{latest}</b><br>"
-                f"Έχετε την <b>{current}</b>.<br><br>"
-                "Κατεβάστε το νέο installer και τρέξτε το από πάνω — τα δεδομένα "
-                "σας μένουν ως έχουν."
-            )
-            open_btn = box.addButton("Άνοιγμα σελίδας λήψης",
-                                     QMessageBox.ButtonRole.AcceptRole)
-            box.addButton("Αργότερα", QMessageBox.ButtonRole.RejectRole)
-            box.exec()
-            if box.clickedButton() == open_btn:
-                QDesktopServices.openUrl(QUrl(url))
+        if info.is_newer:
+            updater.Updater(self.window()).offer(info)
         else:
             QMessageBox.information(
                 self, "Ενημερωμένο",
-                f"Έχετε την τελευταία έκδοση (<b>{current}</b>).",
+                f"Έχετε την τελευταία έκδοση (<b>{info.current}</b>).",
             )
 
     def _on_update_failed(self, detail: str) -> None:

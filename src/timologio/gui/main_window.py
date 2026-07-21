@@ -76,7 +76,7 @@ from .sync_page import SyncPage
 from .theme import CURRENT, apply_theme, money, paint_title_bar
 from .tour import Step, Tour
 from .tray import Tray
-from . import unlock
+from . import unlock, updater
 from .widgets import resort, setup_columns
 from .workers import SyncWorker
 
@@ -169,6 +169,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(400, self._maybe_first_run_tour)
         if self._connection_problem:
             QTimer.singleShot(200, self._report_connection_problem)
+        # Έλεγχος ενημερώσεων σε κάθε εκκίνηση — σιωπηλά, με καθυστέρηση ώστε να
+        # μην ανταγωνίζεται το άνοιγμα. Ενοχλεί μόνο αν υπάρχει νεότερη έκδοση.
+        QTimer.singleShot(2500, self._check_updates_on_startup)
 
     # -------------------------------------------------------------- δίκτυο
     def _check_terminal_connection(self) -> presence.Check | None:
@@ -271,6 +274,26 @@ class MainWindow(QMainWindow):
     def _on_start_minimized(self, value: bool) -> None:
         save_start_minimized(value)
         log.info("Εκκίνηση στο tray: %s", "ναι" if value else "όχι")
+
+    # ---------------------------------------------------------- ενημερώσεις
+    def _check_updates_on_startup(self) -> None:
+        self._updater = updater.Updater(self)
+        self._chk_thread = QThread(self)
+        self._chk_worker = updater.CheckWorker(APP_VERSION)
+        self._chk_worker.moveToThread(self._chk_thread)
+        self._chk_thread.started.connect(self._chk_worker.run)
+        self._chk_worker.ok.connect(self._on_startup_update)
+        self._chk_worker.failed.connect(
+            lambda exc: log.info("Έλεγχος ενημερώσεων: %s", exc)
+        )
+        self._chk_thread.start()
+
+    def _on_startup_update(self, info) -> None:
+        self._chk_thread.quit()
+        self._chk_thread.wait(3000)
+        # Ποτέ στη μέση λήψης: μια ενημέρωση κλείνει την εφαρμογή.
+        if info.is_newer and self._thread is None:
+            self._updater.offer(info)
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:

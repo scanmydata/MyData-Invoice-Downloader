@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 OWNER_REPO = "scanmydata/MyData-Invoice-Downloader"
 API_URL = f"https://api.github.com/repos/{OWNER_REPO}/releases/latest"
@@ -34,10 +35,18 @@ class UpdateInfo:
     current: str
     latest: str
     url: str
+    asset_url: str = ""   # άμεσος σύνδεσμος του setup.exe (κενό αν λείπει)
+    asset_name: str = ""
+    asset_size: int = 0
 
     @property
     def is_newer(self) -> bool:
         return parse_version(self.latest) > parse_version(self.current)
+
+    @property
+    def can_auto_install(self) -> bool:
+        """Υπάρχει installer να κατεβάσουμε; Χωρίς αυτόν μένει μόνο ο σύνδεσμος."""
+        return bool(self.asset_url)
 
 
 def check(current: str, timeout: int = 8) -> UpdateInfo:
@@ -53,4 +62,73 @@ def check(current: str, timeout: int = 8) -> UpdateInfo:
     data = response.json()
     tag = str(data.get("tag_name") or "").strip()
     url = str(data.get("html_url") or "").strip() or RELEASES_URL
-    return UpdateInfo(current=current, latest=tag.lstrip("vV") or "?", url=url)
+
+    asset_url = asset_name = ""
+    asset_size = 0
+    for asset in data.get("assets") or []:
+        name = str(asset.get("name") or "")
+        if name.lower().endswith(".exe"):
+            asset_url = str(asset.get("browser_download_url") or "")
+            asset_name = name
+            asset_size = int(asset.get("size") or 0)
+            break
+
+    return UpdateInfo(
+        current=current,
+        latest=tag.lstrip("vV") or "?",
+        url=url,
+        asset_url=asset_url,
+        asset_name=asset_name,
+        asset_size=asset_size,
+    )
+
+
+def download(asset_url: str, dest: Path, progress=None, timeout: int = 30) -> Path:
+    """Κατεβάζει τον installer σε ``dest``. ``progress(done, total)`` προαιρετικό.
+
+    Γράφεται σε προσωρινό αρχείο και μετονομάζεται στο τέλος, ώστε μια διακοπή
+    στη μέση να μην αφήσει μισό «έγκυρο» installer.
+    """
+    import requests
+
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    with requests.get(asset_url, stream=True, timeout=timeout) as response:
+        response.raise_for_status()
+        total = int(response.headers.get("Content-Length") or 0)
+        done = 0
+        with open(tmp, "wb") as handle:
+            for chunk in response.iter_content(chunk_size=256 * 1024):
+                if not chunk:
+                    continue
+                handle.write(chunk)
+                done += len(chunk)
+                if progress is not None:
+                    progress(done, total)
+    tmp.replace(dest)
+    return dest
+
+
+def build_updater_script(
+    *, pid: int, setup: Path, app_exe: Path, data_dir: Path, role: str, tray: bool
+) -> str:
+    """PowerShell που τρέχει ΑΦΟΥ κλείσει η εφαρμογή: εγκαθιστά και ξαναανοίγει.
+
+    Περιμένει πρώτα να τερματίσει η τρέχουσα διεργασία (ώστε να ξεκλειδώσουν τα
+    αρχεία), τρέχει τον installer σιωπηλά περνώντας τις ΤΡΕΧΟΥΣΕΣ ρυθμίσεις
+    (φάκελος/ρόλος/tray) ώστε να μη χαθούν, και μετά ξεκινά τη νέα έκδοση.
+    """
+    def q(text: str) -> str:  # single-quoted PowerShell literal
+        return "'" + str(text).replace("'", "''") + "'"
+
+    tray_flag = "/TRAY=1" if tray else "/TRAY=0"
+    args = (
+        f"'/SILENT','/SUPPRESSMSGBOXES','/NORESTART',"
+        f"'/DATADIR={str(data_dir).replace(chr(39), chr(39) * 2)}',"
+        f"'/ROLE={role}','{tray_flag}'"
+    )
+    return (
+        "$ErrorActionPreference='SilentlyContinue'\n"
+        f"Wait-Process -Id {int(pid)} -Timeout 60\n"
+        f"Start-Process -Wait -FilePath {q(setup)} -ArgumentList @({args})\n"
+        f"Start-Process -FilePath {q(app_exe)}\n"
+    )
