@@ -93,6 +93,7 @@ _COLUMN_SPEC: list[tuple[str, int, str]] = [
     ("Αχαρ.", 54, "Αχαρακτήριστα κατά το RequestE3Info"),
     ("Έσοδα", 88, "Αξία όσων εξέδωσε ο πελάτης"),
     ("Έξοδα", 88, "Αξία όσων εξέδωσαν άλλοι προς αυτόν"),
+    ("Τελευταία λήψη", 132, "Ημερομηνία και ώρα της τελευταίας επιτυχούς λήψης"),
 ]
 
 #: Σύντομη ετικέτα: το «Λείπει κλειδί API» έτρωγε 110px για να πει το ίδιο.
@@ -100,6 +101,7 @@ _STATUS_READY = "Διαθέσιμος"
 _STATUS_NO_KEY = "Χωρίς κλειδί"
 _COLUMNS = [c[0] for c in _COLUMN_SPEC]
 _COL_CHECK, _COL_VAT, _COL_LABEL, _COL_STATUS = 0, 1, 2, 3
+_COL_LAST = 9
 
 _FILTERS = ["Όλοι", "Διαθέσιμοι", "Χωρίς κλειδί API", "Με αχαρακτήριστα"]
 
@@ -134,6 +136,9 @@ class MainWindow(QMainWindow):
         self._thread: QThread | None = None
         self._worker: SyncWorker | None = None
         self._checked: set[str] = set()
+        self._pinned_vat: str | None = None
+        self._last_totals: tuple[int, int, int, int] | None = None
+        self._last_db_mtime: float = 0.0
         self._tooltips_on = True
         self._tour: Tour | None = None
         self._stale: set[str] = set()
@@ -159,6 +164,7 @@ class MainWindow(QMainWindow):
             log.info("Μπήκαν δεδομένα επίδειξης για την πρώτη εκκίνηση")
         self.reload_clients()
         self._start_presence()
+        self._start_db_watch()
         self._setup_tray()
         QTimer.singleShot(400, self._maybe_first_run_tour)
         if self._connection_problem:
@@ -215,6 +221,41 @@ class MainWindow(QMainWindow):
             version=APP_VERSION,
             data_dir=self.settings.data_dir,
         )
+        # Ο δικός μας παλμός αλλάζει το αρχείο· κρατάμε την ώρα ώστε ο watcher να
+        # μην τον εκλάβει ως αλλαγή από άλλον και κάνει άσκοπη ανανέωση.
+        self._last_db_mtime = self._db_mtime()
+
+    # ----------------------------------------------------- ζωντανή ανανέωση
+    def _db_mtime(self) -> float:
+        try:
+            return self.settings.db_path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def _start_db_watch(self) -> None:
+        """Ανανεώνει τη λίστα όταν η βάση αλλάζει από άλλον υπολογιστή.
+
+        Σε δικτυακό φάκελο δεν υπάρχει αξιόπιστη ειδοποίηση αλλαγής πάνω από
+        SMB, οπότε ελέγχουμε την ώρα τροποποίησης του αρχείου. Είναι φθηνό και
+        δουλεύει το ίδιο τοπικά και στο δίκτυο.
+        """
+        self._db_timer = QTimer(self)
+        self._db_timer.setInterval(5000)
+        self._db_timer.timeout.connect(self._poll_db)
+        self._db_timer.start()
+
+    def _poll_db(self) -> None:
+        # Όσο τρέχει η δική μας λήψη ανανεώνουμε ήδη ανά πελάτη — μην μπλέκουμε.
+        if self._thread is not None:
+            return
+        # Μόνο στη σελίδα Πελατών/Λήψης έχει νόημα να ξαναγεμίσει ο πίνακας·
+        # στη σελίδα Παραστατικών ή στον Πίνακα ελέγχου δεν το αγγίζουμε.
+        if self._current_page() not in ("clients", "sync"):
+            return
+        mtime = self._db_mtime()
+        if mtime and mtime != self._last_db_mtime:
+            log.debug("Η βάση άλλαξε από άλλον — ζωντανή ανανέωση")
+            self.reload_clients()  # ενημερώνει και το _last_db_mtime
 
     # ---------------------------------------------------------------- tray
     def _setup_tray(self) -> None:
@@ -254,6 +295,20 @@ class MainWindow(QMainWindow):
         root.setSpacing(9)
         shell.addWidget(right, 1)
 
+        # Ο ενεργός πελάτης, πάνω δεξιά και μόνιμα ορατός σε κάθε σελίδα — όχι
+        # χαμένος στην κάτω-αριστερή γραμμή κατάστασης, όπου τον σκέπαζαν τα
+        # μηνύματα προόδου.
+        topbar = QHBoxLayout()
+        topbar.setContentsMargins(2, 0, 2, 0)
+        topbar.addStretch()
+        self.active_client = QLabel("Κανένας πελάτης επιλεγμένος")
+        self.active_client.setToolTip("Ο πελάτης στον οποίο δουλεύετε τώρα")
+        self.active_client.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        topbar.addWidget(self.active_client)
+        root.addLayout(topbar)
+
         self.stack = QStackedWidget()
         self.stack.addWidget(self._clients_page())
 
@@ -288,15 +343,11 @@ class MainWindow(QMainWindow):
         self.menu.set_enabled_action("documents", False)
 
     def _build_status_bar(self) -> None:
-        """Ο επιλεγμένος πελάτης μένει μόνιμα ορατός.
+        """Η γραμμή κατάστασης μένει για τα προσωρινά μηνύματα (showMessage).
 
-        Το showMessage γράφει στην αριστερή, προσωρινή περιοχή — ένα μήνυμα
-        προόδου θα έσβηνε τον πελάτη. Γι' αυτό μπαίνει ως permanent widget.
+        Ο ενεργός πελάτης μετακόμισε πάνω δεξιά (active_client), όπου δεν τον
+        σκεπάζει η πρόοδος της λήψης.
         """
-        self.status_client = QLabel("Κανένας πελάτης επιλεγμένος")
-        self.status_client.setToolTip("Ο πελάτης στον οποίο δουλεύετε τώρα")
-        self.status_client.setStyleSheet(f"color:{CURRENT.muted}; padding-right:6px;")
-        self.status.addPermanentWidget(self.status_client)
         self._set_status_client([])
 
     def _progress_strip(self) -> QWidget:
@@ -355,19 +406,40 @@ class MainWindow(QMainWindow):
         self.search.setToolTip("Φιλτράρει τη λίστα καθώς πληκτρολογείτε")
         self.search.textChanged.connect(self.reload_clients)
         filters.addWidget(self.search)
+        layout.addLayout(filters)
+
+        # --- μπάρα επιλογής, ακριβώς πάνω από τον πίνακα
+        selbar = QHBoxLayout()
+        selbar.setSpacing(7)
+        self.lbl_selcount = QLabel("")
+        self.lbl_selcount.setToolTip("Πόσοι πελάτες είναι επιλεγμένοι για λήψη")
+        selbar.addWidget(self.lbl_selcount)
+        selbar.addStretch()
+
+        hint = QLabel("Κλικ στο κουτάκι ή διπλό κλικ / πλήκτρο διαστήματος")
+        hint.setObjectName("muted")
+        selbar.addWidget(hint)
 
         self.btn_check_all = QPushButton("Επιλογή όλων")
         self.btn_check_all.setToolTip("Επιλέγει όσους πελάτες δείχνει ο πίνακας")
         self.btn_check_all.clicked.connect(lambda: self._check_shown(True))
-        filters.addWidget(self.btn_check_all)
+        selbar.addWidget(self.btn_check_all)
 
         self.btn_check_none = QPushButton("Αποεπιλογή όλων")
         self.btn_check_none.setToolTip("Καθαρίζει όλες τις επιλογές")
         self.btn_check_none.clicked.connect(lambda: self._check_shown(False))
-        filters.addWidget(self.btn_check_none)
-        layout.addLayout(filters)
+        selbar.addWidget(self.btn_check_none)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Ο πίνακας μπαίνει σε δικό του container μαζί με τη μπάρα επιλογής,
+        # ώστε η μπάρα να κάθεται ΑΚΡΙΒΩΣ πάνω από τον πίνακα και όχι πάνω από
+        # ολόκληρο το splitter (που θα σκέπαζε και το panel ανάλυσης).
+        table_holder = QWidget()
+        holder_box = QVBoxLayout(table_holder)
+        holder_box.setContentsMargins(0, 0, 0, 0)
+        holder_box.setSpacing(6)
+        holder_box.addLayout(selbar)
+
         self.table = QTableWidget(0, len(_COLUMNS))
         self.table.setHorizontalHeaderLabels(_COLUMNS)
         self.table.verticalHeader().setVisible(False)
@@ -393,7 +465,15 @@ class MainWindow(QMainWindow):
         backspace = QShortcut(QKeySequence(Qt.Key.Key_Backspace), self)
         backspace.setContext(Qt.ShortcutContext.WindowShortcut)
         backspace.activated.connect(self._delete_selected)
-        splitter.addWidget(self.table)
+        # Πλήκτρο διαστήματος: (απο)επιλέγει τις φωτισμένες γραμμές — ο
+        # γρήγορος τρόπος αφού τις διαλέξεις με Shift/Ctrl+κλικ.
+        space = QShortcut(QKeySequence(Qt.Key.Key_Space), self.table)
+        space.setContext(Qt.ShortcutContext.WidgetShortcut)
+        space.activated.connect(
+            lambda: self._toggle_checked({i.row() for i in self.table.selectedIndexes()})
+        )
+        holder_box.addWidget(self.table)
+        splitter.addWidget(table_holder)
 
         self.analysis = AnalysisPanel()
         self.analysis.filter_requested.connect(self._open_documents_filtered)
@@ -448,11 +528,18 @@ class MainWindow(QMainWindow):
                           COALESCE(SUM(CASE WHEN d.issuer_vat = c.vat
                                             THEN d.total_value ELSE 0 END),0) income,
                           COALESCE(SUM(CASE WHEN d.issuer_vat <> c.vat
-                                            THEN d.total_value ELSE 0 END),0) expense
+                                            THEN d.total_value ELSE 0 END),0) expense,
+                          MAX(CASE WHEN d.status='downloaded'
+                                   THEN d.updated_at END) last_dl
                    FROM documents d JOIN clients c ON c.id = d.client_id
                    GROUP BY d.client_id"""
             )
         }
+        # Ώρα τελευταίας λήψης ανά ΑΦΜ, έτοιμη για εμφάνιση/ταξινόμηση.
+        last_dl: dict[int, tuple[str, float]] = {}
+        for cid, s in stats.items():
+            last_dl[cid] = _fmt_last_download(s["last_dl"])
+
         needle = self.search.text().strip().lower()
         mode = self.combo_filter.currentText()
 
@@ -466,6 +553,12 @@ class MainWindow(QMainWindow):
         if needle:
             rows = [r for r in rows
                     if needle in r["vat"].lower() or needle in (r["label"] or "").lower()]
+
+        # Ο ενεργός / μόλις προστεθείς πελάτης πάει στην κορυφή, εφόσον ο
+        # χρήστης δεν έχει διαλέξει δική του ταξινόμηση (τότε σεβόμαστε αυτήν).
+        pin = self._pinned_vat
+        if pin and not getattr(self.table, "_sort_chosen", False):
+            rows = sorted(rows, key=lambda r: r["vat"] != pin)
 
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
@@ -494,6 +587,7 @@ class MainWindow(QMainWindow):
                 check.setToolTip("Χωρίς κλειδί API — δεν μπορεί να κατεβάσει")
             self.table.setItem(i, _COL_CHECK, check)
 
+            last_text, last_key = last_dl.get(row["id"], ("—", 0.0))
             cells = {
                 _COL_VAT: row["vat"],
                 _COL_LABEL: row["label"] or "",
@@ -501,9 +595,11 @@ class MainWindow(QMainWindow):
                 4: str(total), 5: str(done), 6: str(uncls),
                 7: money(income) if income else "—",
                 8: money(expense) if expense else "—",
+                _COL_LAST: last_text,
             }
             sort_keys: dict[int, float] = {4: total, 5: done, 6: uncls,
-                                           7: income, 8: expense}
+                                           7: income, 8: expense,
+                                           _COL_LAST: last_key}
             for col, text in cells.items():
                 if col in sort_keys:
                     item = SortableItem(text, sort_keys[col])
@@ -525,6 +621,7 @@ class MainWindow(QMainWindow):
 
         self.table.setSortingEnabled(True)
         resort(self.table)
+        self._highlight_pinned()
         self.table.blockSignals(False)
 
         all_rows = repo.list_clients(self.conn)
@@ -536,7 +633,35 @@ class MainWindow(QMainWindow):
         )
         self.sync_page.checked = set(self._checked)
         self.sync_page.load_clients(self.conn)
+        self._update_selcount()
         self._refresh_tooltips()
+        # Σημειώνουμε την τρέχουσα κατάσταση του αρχείου: ο watcher ανανεώνει
+        # μόνο όταν αλλάξει από ΑΛΛΟΝ (δείτε _poll_db).
+        self._last_db_mtime = self._db_mtime()
+
+    def _set_pinned(self, vat: str | None) -> None:
+        """Ορίζει τον πελάτη που «κρατιέται» στην κορυφή και φωτίζεται.
+
+        Χρησιμοποιείται για τον μόλις προστεθέντα (ώστε να μη χαθεί μέσα στη
+        λίστα) και για τον ενεργό. Δεν φιλτράρει — απλώς φέρνει στην κορυφή.
+        """
+        self._pinned_vat = vat or None
+
+    def _highlight_pinned(self) -> None:
+        """Βρίσκει τη γραμμή του καρφιτσωμένου πελάτη, τη φωτίζει και κυλά ως εκεί."""
+        vat = self._pinned_vat
+        if not vat:
+            return
+        for i in range(self.table.rowCount()):
+            item = self.table.item(i, _COL_VAT)
+            if item is not None and item.text() == vat:
+                self.table.scrollToItem(item,
+                                        QAbstractItemView.ScrollHint.PositionAtCenter)
+                for col in range(self.table.columnCount()):
+                    cell = self.table.item(i, col)
+                    if cell is not None:
+                        cell.setBackground(QColor(CURRENT.chip))
+                return
 
     def _on_double_click(self) -> None:
         """Διπλό κλικ σε γραμμή πελάτη.
@@ -588,10 +713,22 @@ class MainWindow(QMainWindow):
     def _sync_checked(self) -> None:
         """Οι δύο λίστες (Πελάτες / Λήψη) δείχνουν την ίδια επιλογή."""
         self.sync_page.set_checked(self._checked)
+        self._update_selcount()
         self.status.showMessage(
             f"{len(self._checked)} πελάτες επιλεγμένοι για λήψη"
             if self._checked else "Κανένας επιλεγμένος — η λήψη θα γίνει για όλους"
         )
+
+    def _update_selcount(self) -> None:
+        n = len(self._checked)
+        if n:
+            self.lbl_selcount.setText(f"✓ {n} επιλεγμένοι για λήψη")
+            self.lbl_selcount.setStyleSheet(
+                f"color:{CURRENT.accent}; font-weight:600;"
+            )
+        else:
+            self.lbl_selcount.setText("Κανένας επιλεγμένος — θα κατέβουν όλοι οι διαθέσιμοι")
+            self.lbl_selcount.setStyleSheet(f"color:{CURRENT.muted};")
 
     def _on_sync_selection(self, _: int) -> None:
         """Η επιλογή άλλαξε από τη σελίδα Λήψης."""
@@ -616,6 +753,7 @@ class MainWindow(QMainWindow):
         self.table.blockSignals(False)
         ready = sum(1 for r in repo.list_clients(self.conn) if r["status"] == "ready")
         self.sync_page.set_target(len(self._checked), ready)
+        self._update_selcount()
         self.reload_clients()
 
     def _selected_vats(self, only_ready: bool = True) -> list[str]:
@@ -642,6 +780,10 @@ class MainWindow(QMainWindow):
     def _on_selection(self, animate: bool = True) -> None:
         vats = self._selected_vats(only_ready=False)
         self.menu.set_enabled_action("documents", len(vats) == 1)
+        # Ο ενεργός πελάτης (μονή επιλογή) γίνεται ο καρφιτσωμένος, ώστε στην
+        # επόμενη ανανέωση να εμφανίζεται στην κορυφή. Δεν ανανεώνουμε τώρα —
+        # θα ήταν ενοχλητικό να πηδά η γραμμή κάτω από το ποντίκι.
+        self._pinned_vat = vats[0] if len(vats) == 1 else self._pinned_vat
         if vats:
             if len(vats) == 1:
                 self.analysis.show_client(self.conn, vats[0])
@@ -659,18 +801,18 @@ class MainWindow(QMainWindow):
 
     def _set_status_client(self, vats: list[str]) -> None:
         if len(vats) == 1:
-            self.status_client.setText(f"Πελάτης: {self._label_for(vats[0])} · {vats[0]}")
-            self.status_client.setStyleSheet(
-                f"color:{CURRENT.accent}; font-weight:600; padding-right:6px;"
+            self.active_client.setText(
+                f"● Ενεργός πελάτης: {self._label_for(vats[0])} · {vats[0]}"
+            )
+            self.active_client.setStyleSheet(
+                f"color:{CURRENT.accent}; font-weight:600;"
             )
         else:
-            self.status_client.setText(
+            self.active_client.setText(
                 f"{len(vats)} πελάτες επιλεγμένοι" if vats
                 else "Κανένας πελάτης επιλεγμένος"
             )
-            self.status_client.setStyleSheet(
-                f"color:{CURRENT.muted}; padding-right:6px;"
-            )
+            self.active_client.setStyleSheet(f"color:{CURRENT.muted};")
 
     def _set_panel_open(self, open_: bool, *, animate: bool = True) -> None:
         """Ανοίγει/κλείνει το δεξί panel με συρόμενο εφέ.
@@ -1148,10 +1290,14 @@ class MainWindow(QMainWindow):
         repo.upsert_client(self.conn, dialog.client, self.crypto)
         repo.seed_suppliers_from_clients(self.conn)
         self.conn.commit()
-        self.reload_clients()
         self._log(f"Προστέθηκε ο πελάτης {dialog.client.vat} {dialog.client.label}")
         self._show_page("clients")
-        self.search.setText(dialog.client.vat)
+        # Δεν φιλτράρουμε τη λίστα στον νέο πελάτη (θα έκρυβε όλους τους
+        # άλλους): τον φέρνουμε στην κορυφή και τον φωτίζουμε, αφήνοντας τη
+        # λίστα ολόκληρη. Καθαρίζουμε τυχόν αναζήτηση που θα τον έκρυβε.
+        self._set_pinned(dialog.client.vat)
+        self.search.clear()  # μπορεί να πυροδοτήσει reload — έχει ήδη οριστεί το pin
+        self.reload_clients()
 
     def on_import(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1386,7 +1532,7 @@ class MainWindow(QMainWindow):
         «Παράλειψη» δεν έχει δει ακόμη τι κάνει η εφαρμογή, οπότε θα ήταν άδικο
         να μείνει με άδεια οθόνη — τα δείγματα φεύγουν την επόμενη φορά.
         """
-        self._prefs.setValue("tour_seen", True)
+        repo.set_meta(self.conn, "tour_seen", "1")
         if not completed or not demo.has_demo(self.conn):
             return
         removed = demo.clear(self.conn)
@@ -1411,14 +1557,21 @@ class MainWindow(QMainWindow):
         self.on_add_client()
 
     def _maybe_first_run_tour(self) -> None:
-        """Μία φορά, στην πρώτη εκκίνηση.
+        """Μία φορά, στην πρώτη εκκίνηση σε αυτόν τον φάκελο δεδομένων.
 
-        Δεν ξαναρωτάει: όποιος τη θέλει ξανά την έχει στο μενού, και μια
-        ξενάγηση που εμφανίζεται κάθε πρωί γίνεται εμπόδιο.
+        Η κατάσταση ζει στη βάση (meta) και όχι στο μητρώο: το μητρώο επιβίωνε
+        των εγκαταστάσεων, οπότε μια ολοκαίνουρια εγκατάσταση πάνω σε παλιό
+        προφίλ ΔΕΝ έδειχνε ποτέ την ξενάγηση — ακριβώς το πρόβλημα που
+        αναφέρθηκε. Η βάση ταξιδεύει με τον φάκελο, άρα «καινούριος φάκελος»
+        σημαίνει «δείξε ξενάγηση».
         """
-        if self._prefs.value("tour_seen", False, type=bool):
+        if repo.get_meta(self.conn, "tour_seen") == "1":
             return
-        self._prefs.setValue("tour_seen", True)
+        # Μετάβαση από την παλιά αποθήκευση στο μητρώο: όποιος έχει ήδη δει την
+        # ξενάγηση δεν την ξαναβλέπει μετά την αναβάθμιση.
+        if self._prefs.value("tour_seen", False, type=bool):
+            repo.set_meta(self.conn, "tour_seen", "1")
+            return
         self.start_tour()
 
     def on_password(self) -> None:
@@ -1517,6 +1670,7 @@ class MainWindow(QMainWindow):
         self.reload_clients()
 
     def _on_totals(self, found: int, pdfs: int, no_url: int, failed: int) -> None:
+        self._last_totals = (found, pdfs, no_url, failed)
         text = f"{found} παραστατικά · {pdfs} PDF · {no_url} χωρίς PDF"
         if failed:
             text += f" · {failed} σφάλματα"
@@ -1528,9 +1682,34 @@ class MainWindow(QMainWindow):
         self.progress_label.setText(
             "Η λήψη ολοκληρώθηκε." if completed else "Η λήψη ακυρώθηκε."
         )
+        totals = self._last_totals
         self._teardown()
         self.reload_clients()
         self._on_selection()
+        if completed:
+            self._show_sync_summary(totals)
+
+    def _show_sync_summary(self, totals: tuple[int, int, int, int] | None) -> None:
+        """Popup επιτυχίας στο τέλος της λήψης — αλλιώς ο χρήστης δεν ξέρει αν
+        τελείωσε ή αν απλώς σταμάτησε η μπάρα."""
+        found, pdfs, no_url, failed = totals or (0, 0, 0, 0)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning if failed else QMessageBox.Icon.Information)
+        box.setWindowTitle("Η λήψη ολοκληρώθηκε")
+        lines = [
+            f"<b>{found}</b> παραστατικά",
+            f"<b>{pdfs}</b> PDF κατέβηκαν",
+        ]
+        if no_url:
+            lines.append(f"{no_url} χωρίς PDF παρόχου")
+        if failed:
+            lines.append(
+                f'<span style="color:{CURRENT.bad};">{failed} με σφάλμα '
+                "— δοκιμάστε ξανά «Έναρξη λήψης»</span>"
+            )
+        box.setText("Η λήψη ολοκληρώθηκε.<br><br>" + "<br>".join(lines))
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
 
     def _on_busy(self, message: str) -> None:
         self._log("Η λήψη ακυρώθηκε: εκτελείται ήδη από άλλον υπολογιστή.")
@@ -1607,6 +1786,26 @@ class MainWindow(QMainWindow):
         # Το quitOnLastWindowClosed είναι απενεργοποιημένο για χάρη του tray,
         # οπότε ο τερματισμός πρέπει να ζητηθεί ρητά.
         QApplication.instance().quit()
+
+
+def _fmt_last_download(iso: str | None) -> tuple[str, float]:
+    """(κείμενο για εμφάνιση, κλειδί ταξινόμησης) από ISO χρόνο σε UTC.
+
+    Το SQLite γράφει datetime('now') σε UTC. Ο λογιστής θέλει τοπική ώρα, οπότε
+    μετατρέπουμε — αλλιώς η «τελευταία λήψη» φαίνεται 2-3 ώρες πίσω.
+    """
+    if not iso:
+        return "—", 0.0
+    from datetime import datetime, timezone
+
+    try:
+        stamp = datetime.strptime(iso[:19], "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=timezone.utc
+        )
+    except (ValueError, TypeError):
+        return "—", 0.0
+    local = stamp.astimezone()
+    return local.strftime("%d/%m/%Y %H:%M"), stamp.timestamp()
 
 
 def _safe_name(label: str) -> str:

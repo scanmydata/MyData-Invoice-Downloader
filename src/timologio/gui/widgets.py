@@ -144,11 +144,27 @@ class GrDateEdit(QDateEdit):
         super().__init__(parent)
         self.setCalendarPopup(True)
         self.setDisplayFormat("dd/MM/yyyy")
-        self.setFixedWidth(122)
+        self.setFixedWidth(128)
         # Χωρίς όριο, το βελάκι «κάτω» ταξιδεύει στο 1752.
         self.setMinimumDate(QDate(2000, 1, 1))
         self.setMaximumDate(QDate.currentDate().addYears(1))
         self.setDate(QDate(initial) if initial else QDate.currentDate())
+        # Χωρίς keyboard tracking, το πεδίο δεν προσπαθεί να «διορθώσει» την
+        # ημερομηνία σε κάθε πληκτρολόγηση — ο χρήστης γράφει ολόκληρη την
+        # ημέρα/μήνα/έτος και μετά επικυρώνεται, αντί να πηδά ο κέρσορας.
+        self.setKeyboardTracking(False)
+        # StrongFocus (όχι WheelFocus): το πεδίο δέχεται ρόδα ΜΟΝΟ αφού το
+        # κλικάρει ο χρήστης. Αλλιώς, κάθε κύλιση της σελίδας που περνούσε πάνω
+        # από το πεδίο άλλαζε σιωπηλά την ημερομηνία — το κλασικό «η ημερομηνία
+        # αλλάζει μόνη της» που έκανε το datepicker να μοιάζει ασταθές.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        if not self.hasFocus():
+            # Δεν το καταναλώνουμε: αφήνουμε τη σελίδα από κάτω να κυλήσει.
+            event.ignore()
+            return
+        super().wheelEvent(event)
 
     def gr(self) -> str:
         return self.date().toString("dd/MM/yyyy")

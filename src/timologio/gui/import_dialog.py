@@ -18,9 +18,19 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..excel import FORMAT_LABELS_EL, Preview, build_preview
+from ..excel import Action, FORMAT_LABELS_EL, Preview, build_preview
+from .theme import CURRENT
 
 _COLUMNS = ["ΑΦΜ", "Επωνυμία", "Χρήστης", "Κλειδί API", "Ενέργεια", "Παρατηρήσεις"]
+
+#: Χρώμα ανά ενέργεια — ο λογιστής βλέπει με μια ματιά ποιοι είναι νέοι, ποιοι
+#: θα ενημερωθούν (υπάρχουν ήδη) και ποιοι μένουν ίδιοι.
+_ACTION_COLOR = {
+    Action.NEW: CURRENT.ok,
+    Action.UPDATE: CURRENT.accent,
+    Action.UNCHANGED: CURRENT.muted,
+}
+_COL_ACTION = 4
 
 
 class ImportDialog(QDialog):
@@ -79,6 +89,14 @@ class ImportDialog(QDialog):
                 item = QTableWidgetItem(value)
                 if col == 3 and not row.has_key:
                     item.setForeground(QColor("#b00020"))
+                if col == _COL_ACTION:
+                    item.setForeground(QColor(_ACTION_COLOR[row.action]))
+                    if row.action is Action.UPDATE:
+                        # Bold ώστε οι «ήδη υπάρχοντες που θα ενημερωθούν» να
+                        # ξεχωρίζουν — είναι αυτοί που αλλάζει η εισαγωγή.
+                        font = item.font()
+                        font.setBold(True)
+                        item.setFont(font)
                 if data["warnings"]:
                     item.setBackground(QColor("#fff8e1"))
                 self.table.setItem(row_index, col, item)

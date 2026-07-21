@@ -132,6 +132,26 @@ def wipe_documents(conn: sqlite3.Connection, vats: list[str] | None = None) -> i
     return cur.rowcount or 0
 
 
+def get_meta(conn: sqlite3.Connection, key: str, default: str = "") -> str:
+    """Μικρές καταστάσεις που πρέπει να ταξιδεύουν με τον φάκελο δεδομένων.
+
+    Ζουν στη βάση και όχι στα QSettings (μητρώο) ώστε μια νέα εγκατάσταση πάνω
+    σε παλιό μητρώο να μη «θυμάται» πράγματα που ανήκουν σε άλλη βάση — π.χ. αν
+    έχει ήδη δειχθεί η ξενάγηση.
+    """
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES(?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+    conn.commit()
+
+
 def list_clients(conn: sqlite3.Connection, only_ready: bool = False) -> list[sqlite3.Row]:
     sql = "SELECT * FROM clients"
     if only_ready:

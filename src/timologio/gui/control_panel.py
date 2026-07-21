@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -28,7 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import presence, sharing
+from .. import presence, sharing, updates
 from ..config import ROLE_LABELS_EL
 from ..db import is_network_path
 from ..locking import SyncLock
@@ -42,6 +44,25 @@ REFRESH_MS = 10_000
 
 def _dot(online: bool) -> str:
     return "🟢" if online else "⚪"
+
+
+class _UpdateWorker(QObject):
+    """Ο έλεγχος ενημερώσεων αγγίζει το δίκτυο — τρέχει εκτός GUI thread."""
+
+    ok = Signal(str, str, str, bool)  # current, latest, url, is_newer
+    failed = Signal(str)
+
+    def __init__(self, current: str) -> None:
+        super().__init__()
+        self._current = current
+
+    def run(self) -> None:
+        try:
+            info = updates.check(self._current)
+        except Exception as exc:  # δίκτυο/GitHub κάτω — δεν είναι κρίσιμο
+            self.failed.emit(str(exc))
+            return
+        self.ok.emit(info.current, info.latest, info.url, info.is_newer)
 
 
 class ControlPanel(QWidget):
@@ -104,6 +125,15 @@ class ControlPanel(QWidget):
         row.addWidget(title)
         row.addStretch()
 
+        self.btn_updates = QPushButton("Έλεγχος για ενημερώσεις")
+        self.btn_updates.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_updates.setToolTip(
+            "Ρωτά το GitHub αν υπάρχει νεότερη έκδοση. Δεν κατεβαίνει τίποτα "
+            "αυτόματα."
+        )
+        self.btn_updates.clicked.connect(self.check_updates)
+        row.addWidget(self.btn_updates)
+
         self.btn_check = QPushButton("Έλεγχος σύνδεσης")
         self.btn_check.setObjectName("primary")
         self.btn_check.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -113,6 +143,64 @@ class ControlPanel(QWidget):
         self.btn_check.clicked.connect(self.run_check)
         row.addWidget(self.btn_check)
         return holder
+
+    # -------------------------------------------------------- ενημερώσεις
+    def check_updates(self) -> None:
+        """Ρωτά το GitHub σε νήμα, ώστε να μην παγώσει το παράθυρο αν αργεί."""
+        self.btn_updates.setEnabled(False)
+        self.btn_updates.setText("Έλεγχος…")
+
+        self._upd_thread = QThread(self)
+        self._upd_worker = _UpdateWorker(self._version)
+        self._upd_worker.moveToThread(self._upd_thread)
+        self._upd_thread.started.connect(self._upd_worker.run)
+        self._upd_worker.ok.connect(self._on_update_result)
+        self._upd_worker.failed.connect(self._on_update_failed)
+        self._upd_thread.start()
+
+    def _stop_upd_thread(self) -> None:
+        thread = getattr(self, "_upd_thread", None)
+        if thread is not None:
+            thread.quit()
+            thread.wait(3000)
+        self._upd_thread = None
+        self._upd_worker = None
+        self.btn_updates.setEnabled(True)
+        self.btn_updates.setText("Έλεγχος για ενημερώσεις")
+
+    def _on_update_result(self, current: str, latest: str, url: str, is_newer: bool) -> None:
+        self._stop_upd_thread()
+        if is_newer:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle("Διαθέσιμη ενημέρωση")
+            box.setText(
+                f"Υπάρχει νεότερη έκδοση: <b>{latest}</b><br>"
+                f"Έχετε την <b>{current}</b>.<br><br>"
+                "Κατεβάστε το νέο installer και τρέξτε το από πάνω — τα δεδομένα "
+                "σας μένουν ως έχουν."
+            )
+            open_btn = box.addButton("Άνοιγμα σελίδας λήψης",
+                                     QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("Αργότερα", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() == open_btn:
+                QDesktopServices.openUrl(QUrl(url))
+        else:
+            QMessageBox.information(
+                self, "Ενημερωμένο",
+                f"Έχετε την τελευταία έκδοση (<b>{current}</b>).",
+            )
+
+    def _on_update_failed(self, detail: str) -> None:
+        self._stop_upd_thread()
+        QMessageBox.warning(
+            self, "Δεν ολοκληρώθηκε ο έλεγχος",
+            "Δεν ήταν δυνατή η σύνδεση στο GitHub για έλεγχο ενημερώσεων.<br><br>"
+            "Ελέγξτε τη σύνδεσή σας στο internet και δοκιμάστε ξανά, ή δείτε "
+            f'απευθείας τη <a href="{updates.RELEASES_URL}">σελίδα εκδόσεων</a>.'
+            f"<br><br><span style='color:gray'>{detail[:200]}</span>",
+        )
 
     def _identity_box(self) -> QWidget:
         box = QGroupBox("Αυτός ο υπολογιστής")
