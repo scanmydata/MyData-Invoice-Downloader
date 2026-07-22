@@ -1539,13 +1539,14 @@ class MainWindow(QMainWindow):
             return
         dialog = OnlineOnlyDialog(self.conn, self.settings, rows, self)
         dialog.exec()
-        if dialog.filed_count:
+        if dialog.changed:
             self.reload_clients()
             self._on_selection()
-            self._log(
-                f"Αρχειοθετήθηκαν {dialog.filed_count} μόνο-online παραστατικά "
-                "μέσω του browser"
-            )
+            if dialog.filed_count:
+                self._log(
+                    f"Αρχειοθετήθηκαν {dialog.filed_count} μόνο-online "
+                    "παραστατικά μέσω του browser"
+                )
 
     def _on_headless_message(self, text: str) -> None:
         if self._hl_dialog is not None:

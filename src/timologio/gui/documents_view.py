@@ -722,9 +722,11 @@ class DocumentsView(QWidget):
         from .printing import print_pdfs
 
         printed, failed, cancelled = print_pdfs(paths, self)
-        if cancelled:
+        if cancelled and not printed:
             return
         note = f"\n\n{failed} PDF δεν τυπώθηκαν (δεν διαβάστηκαν)." if failed else ""
+        if cancelled:
+            note += "\n\nΗ εκτύπωση διακόπηκε — στάλθηκαν όσα προλάβατε."
         QMessageBox.information(
             self, "Η εκτύπωση στάλθηκε",
             f"Στάλθηκαν {printed} παραστατικά στον εκτυπωτή.{note}",

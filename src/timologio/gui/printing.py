@@ -20,7 +20,7 @@ from PySide6.QtCore import QRect, QSize, Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
-from PySide6.QtWidgets import QDialog, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QProgressDialog, QWidget
 
 log = logging.getLogger(__name__)
 
@@ -56,16 +56,37 @@ def print_pdfs(paths: list[Path], parent: QWidget | None = None) -> tuple[int, i
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return 0, 0, True
 
+    # Η στοιχειοθέτηση κάθε σελίδας σε εικόνα και, κυρίως, το τελικό «σπρώξιμο»
+    # στην ουρά του εκτυπωτή αργούν. Δείχνουμε modal παράθυρο αναμονής/προόδου
+    # ώστε ο χρήστης να μη νομίζει ότι κόλλησε η εφαρμογή.
+    total = len(paths)
+    progress = QProgressDialog("Προετοιμασία εκτύπωσης…", "Ακύρωση", 0, total, parent)
+    progress.setWindowTitle("Εκτύπωση")
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setAutoClose(False)
+    progress.setAutoReset(False)
+    progress.setValue(0)
+    QApplication.processEvents()
+
     painter = QPainter()
     if not painter.begin(printer):
         log.warning("Δεν άνοιξε ο εκτυπωτής για εκτύπωση")
-        return 0, len(paths), False
+        progress.close()
+        return 0, total, False
 
     doc = QPdfDocument(parent)
     printed = failed = 0
     first_page = True
+    cancelled = False
     try:
-        for path in paths:
+        for i, path in enumerate(paths):
+            if progress.wasCanceled():
+                cancelled = True
+                break
+            progress.setValue(i)
+            progress.setLabelText(f"Εκτύπωση {i + 1} από {total}…")
+            QApplication.processEvents()
             if not _load(doc, path):
                 failed += 1
                 log.warning("Το PDF δεν φορτώθηκε για εκτύπωση: %s", path)
@@ -76,10 +97,15 @@ def print_pdfs(paths: list[Path], parent: QWidget | None = None) -> tuple[int, i
                 first_page = False
                 _draw_page(painter, printer, doc, page)
             printed += 1
+        # Το painter.end() στέλνει την εργασία στον εκτυπωτή — το πιο αργό βήμα.
+        progress.setLabelText("Αποστολή στον εκτυπωτή…")
+        progress.setValue(total)
+        QApplication.processEvents()
     finally:
         painter.end()
         doc.close()
-    return printed, failed, False
+        progress.close()
+    return printed, failed, cancelled
 
 
 def _draw_page(
