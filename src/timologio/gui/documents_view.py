@@ -207,6 +207,16 @@ class DocumentsView(QWidget):
         )
         self.btn_zip.clicked.connect(self._export_zip)
         bar.addWidget(self.btn_zip)
+
+        self.btn_print = QPushButton("  Μαζική εκτύπωση")
+        self.btn_print.setIcon(icon("pdf", CURRENT.muted))
+        self.btn_print.setToolTip(
+            "Τυπώνει με μία εργασία τα PDF των επιλεγμένων παραστατικών.\n"
+            "Χωρίς επιλογή, τυπώνονται όσα δείχνει η τρέχουσα προβολή.\n"
+            "Μόνο όσα έχουν κατεβασμένο PDF μπαίνουν στην εκτύπωση."
+        )
+        self.btn_print.clicked.connect(self._print_selected)
+        bar.addWidget(self.btn_print)
         root.addLayout(bar)
 
         # --- έξυπνα φίλτρα: δύο γραμμές, τρεις ανεξάρτητοι άξονες
@@ -671,6 +681,55 @@ class DocumentsView(QWidget):
             f"{added} αρχεία -> {Path(path).name}{note}",
         )
 
+    def _print_selected(self) -> None:
+        """Μαζική εκτύπωση των PDF των επιλεγμένων (ή, χωρίς επιλογή, όσων
+        δείχνει η προβολή). Τυπώνονται μόνο όσα έχουν κατεβασμένο PDF — το XML
+        της ΑΑΔΕ δεν έχει νόημα στον εκτυπωτή."""
+        rows = self._selected_rows() or getattr(self, "_shown", [])
+        if not rows:
+            QMessageBox.information(self, "Εκτύπωση", "Δεν υπάρχουν παραστατικά.")
+            return
+
+        paths: list[Path] = []
+        for r in rows:
+            if r["local_path"]:
+                candidate = self._settings.storage_root / r["local_path"]
+                if candidate.exists():
+                    paths.append(candidate)
+        if not paths:
+            QMessageBox.information(
+                self, "Εκτύπωση",
+                "Κανένα από τα επιλεγμένα παραστατικά δεν έχει κατεβασμένο PDF.\n\n"
+                "Η μαζική εκτύπωση αφορά μόνο τα PDF — τα «μόνο online» ανοίγουν "
+                "στον πάροχο και τυπώνονται από εκεί.",
+            )
+            return
+
+        without = len(rows) - len(paths)
+        if without:
+            answer = QMessageBox.question(
+                self, "Εκτύπωση",
+                f"{len(paths)} παραστατικά έχουν PDF και θα τυπωθούν.\n"
+                f"{without} δεν έχουν PDF και θα παραλειφθούν.\n\nΣυνέχεια;",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
+        # Το import είναι τοπικό: το QtPdf φορτώνεται μόνο όταν πραγματικά
+        # τυπώνει κάποιος, όχι σε κάθε άνοιγμα της λίστας παραστατικών.
+        from .printing import print_pdfs
+
+        printed, failed, cancelled = print_pdfs(paths, self)
+        if cancelled:
+            return
+        note = f"\n\n{failed} PDF δεν τυπώθηκαν (δεν διαβάστηκαν)." if failed else ""
+        QMessageBox.information(
+            self, "Η εκτύπωση στάλθηκε",
+            f"Στάλθηκαν {printed} παραστατικά στον εκτυπωτή.{note}",
+        )
+
     def _open_button(self, row: sqlite3.Row) -> QWidget:
         """Κουμπί ανοίγματος — ενεργό μόνο όταν υπάρχει όντως αρχείο."""
         path = row["local_path"] or row["xml_path"]
@@ -717,6 +776,7 @@ class DocumentsView(QWidget):
         """Μετά από αλλαγή θέματος: εικονίδια και χρώματα κελιών."""
         self.btn_back.setIcon(icon("back", CURRENT.muted))
         self.btn_zip.setIcon(icon("backup", CURRENT.muted))
+        self.btn_print.setIcon(icon("pdf", CURRENT.muted))
         self.title_icon.setPixmap(icon("pdf", CURRENT.accent, 22).pixmap(QSize(22, 22)))
         self.banner_icon.setPixmap(
             icon("info", CURRENT.accent, 16).pixmap(QSize(16, 16))

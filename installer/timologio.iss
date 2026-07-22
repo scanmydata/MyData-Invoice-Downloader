@@ -7,7 +7,7 @@
 ; Build:  "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\timologio.iss
 
 #define AppName        "Timologio Downloader"
-#define AppVersion     "0.2.6"
+#define AppVersion     "0.2.7"
 #define AppPublisher   "scanmydata"
 #define AppExeName     "TimologioDownloader.exe"
 
@@ -25,6 +25,10 @@ OutputBaseFilename=TimologioDownloader-{#AppVersion}-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+; Σελίδα καλωσορίσματος πριν την επιλογή φακέλου, όπως σε κάθε γνωστό installer.
+; Ο modern οδηγός την κρύβει εξ ορισμού· εδώ την επαναφέρουμε ρητά. Τα κείμενα
+; (WelcomeLabel1/2) και το πλαϊνό γραφικό (WizardImageFile) υπάρχουν ήδη.
+DisableWelcomePage=no
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#AppName}
@@ -50,7 +54,7 @@ Name: "el"; MessagesFile: "compiler:Default.isl"
 el.SetupAppTitle=Εγκατάσταση
 el.SetupWindowTitle=Εγκατάσταση — %1
 el.WelcomeLabel1=Καλώς ήρθατε στην εγκατάσταση του [name]
-el.WelcomeLabel2=Θα εγκατασταθεί το [name/ver] στον υπολογιστή σας.%n%nΚλείστε τυχόν άλλες εφαρμογές πριν συνεχίσετε.
+el.WelcomeLabel2=Θα εγκατασταθεί το [name/ver] στον υπολογιστή σας — η εφαρμογή για μαζική λήψη των παραστατικών myDATA (ΑΑΔΕ) για πολλούς πελάτες.%n%nΟ οδηγός θα σας ρωτήσει πού να αποθηκεύονται τα δεδομένα και πώς θα ξεκινά η εφαρμογή.%n%nΚλείστε τυχόν άλλες εφαρμογές πριν συνεχίσετε.
 el.ButtonNext=&Επόμενο >
 el.ButtonBack=< &Πίσω
 el.ButtonCancel=Άκυρο

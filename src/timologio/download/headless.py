@@ -166,7 +166,7 @@ class HeadlessRenderer:
             if marker.exists():
                 try:
                     return int(marker.read_text().splitlines()[0].strip())
-                except (ValueError, IndexError):
+                except (PermissionError, OSError, ValueError, IndexError):
                     pass
             time.sleep(0.1)
         raise HeadlessError("Ο browser δεν άνοιξε εγκαίρως (DevTools).")

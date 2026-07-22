@@ -267,6 +267,7 @@ class MainWindow(QMainWindow):
         self.tray.show()
         self._really_quit = False
         self._tray_notified = False
+        self._tour_pending = False
         if load_start_minimized():
             # Το hide() πρέπει να γίνει αφού το Qt δείξει το παράθυρο, αλλιώς σε
             # κάποια συστήματα εμφανίζεται μια στιγμή και μετά εξαφανίζεται.
@@ -1461,30 +1462,48 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # Δύο δρόμοι: (α) μέσω του browser του χρήστη — δουλεύει και για
+        # παρόχους πίσω από έλεγχο ανθρώπου (Cloudflare), γιατί τον έλεγχο τον
+        # περνά ο ίδιος· (β) αυτόματα με αόρατο browser — γρήγορο, αλλά μόνο για
+        # παρόχους χωρίς τέτοιο έλεγχο.
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Λήψη μόνο-online")
+        box.setText(
+            f"<b>{n}</b> παραστατικά εμφανίζονται μόνο online στον πάροχο. "
+            "Πώς θέλετε να τα κατεβάσετε;"
+        )
+        box.setInformativeText(
+            "<b>Μέσω του browser σας</b> (προτείνεται): ανοίγουν στον browser "
+            "σας, τα αποθηκεύετε ως PDF και η εφαρμογή τα αρχειοθετεί μόνη της. "
+            "Δουλεύει και για παρόχους πίσω από έλεγχο «είστε άνθρωπος» "
+            "(π.χ. Epsilon, Megasoft).<br><br>"
+            "<b>Αυτόματα</b>: αόρατος browser τυπώνει τη σελίδα σε PDF — γρήγορο, "
+            "αλλά όσα κρύβονται πίσω από τέτοιον έλεγχο θα μείνουν ως έχουν."
+        )
+        btn_browser = box.addButton("Μέσω του browser μου", QMessageBox.ButtonRole.AcceptRole)
+        btn_auto = box.addButton("Αυτόματα", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("Άκυρο", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(btn_browser)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == btn_browser:
+            self._open_online_only_browser()
+            return
+        if clicked != btn_auto:
+            return
+
         from ..download import headless
 
         if not headless.available():
             QMessageBox.warning(
                 self, "Χρειάζεται Microsoft Edge ή Google Chrome",
-                "Για τη λήψη των «μόνο online» παραστατικών χρειάζεται ένας "
-                "browser (Edge ή Chrome) εγκατεστημένος στον υπολογιστή.\n\n"
+                "Για την αυτόματη λήψη των «μόνο online» παραστατικών χρειάζεται "
+                "ένας browser (Edge ή Chrome) εγκατεστημένος στον υπολογιστή.\n\n"
                 "Το Microsoft Edge υπάρχει προεγκατεστημένο σε κάθε Windows "
-                "10/11· αν λείπει, εγκαταστήστε τον Edge ή τον Chrome και "
-                "δοκιμάστε ξανά.",
+                "10/11· αν λείπει, εγκαταστήστε τον Edge ή τον Chrome — ή "
+                "χρησιμοποιήστε την επιλογή «Μέσω του browser μου».",
             )
-            return
-
-        answer = QMessageBox.question(
-            self, "Λήψη μόνο-online",
-            f"Θα ανοίξει ένας αόρατος (headless) browser και θα προσπαθήσει να "
-            f"κατεβάσει <b>{n}</b> παραστατικά που ο πάροχος δείχνει μόνο online, "
-            "τυπώνοντάς τα σε PDF.<br><br>"
-            "Μπορεί να πάρει λίγη ώρα. Όσα δεν στοιχειοθετούνται (π.χ. προβολές "
-            "Epsilon πίσω από Cloudflare) θα μείνουν ως έχουν.<br><br>Να ξεκινήσει;",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
             return
 
         create_backup(self.settings.db_path, reason="headless")
@@ -1506,6 +1525,27 @@ class MainWindow(QMainWindow):
         self._hl_worker.failed.connect(self._on_headless_failed)
         self._hl_dialog.canceled.connect(self._hl_worker.cancel)
         self._hl_thread.start()
+
+    def _open_online_only_browser(self) -> None:
+        """Καθοδηγούμενη λήψη μέσω του browser του χρήστη + αυτόματη αρχειοθέτηση.
+
+        Ο χρήστης περνά ο ίδιος τυχόν έλεγχο «είστε άνθρωπος» στον πάροχο· εμείς
+        απλώς αρχειοθετούμε το PDF που κατεβάζει. Καμία παράκαμψη ελέγχου.
+        """
+        from ..gui.online_only import OnlineOnlyDialog
+
+        rows = repo.viewer_only_documents(self.conn)
+        if not rows:
+            return
+        dialog = OnlineOnlyDialog(self.conn, self.settings, rows, self)
+        dialog.exec()
+        if dialog.filed_count:
+            self.reload_clients()
+            self._on_selection()
+            self._log(
+                f"Αρχειοθετήθηκαν {dialog.filed_count} μόνο-online παραστατικά "
+                "μέσω του browser"
+            )
 
     def _on_headless_message(self, text: str) -> None:
         if self._hl_dialog is not None:
@@ -1638,7 +1678,12 @@ class MainWindow(QMainWindow):
                 "6. Τα παραστατικά",
                 "Ο πίνακας ανοίγει στα αχαρακτήριστα — αυτά που θέλουν δουλειά "
                 "από εσάς. Η μπλε ταινία σας το θυμίζει· «Καθαρισμός» για όλα.\n\n"
-                "Τα φίλτρα συνδυάζονται: π.χ. έξοδα ΚΑΙ ελήφθησαν PDF.",
+                "Τα φίλτρα συνδυάζονται: π.χ. έξοδα ΚΑΙ ελήφθησαν PDF.\n\n"
+                "Τσεκάρετε παραστατικά και: «Εξαγωγή σε ZIP» για να τα πακετάρετε, "
+                "ή «Μαζική εκτύπωση» για να τα τυπώσετε όλα με μία εργασία.\n\n"
+                "Όσα ο πάροχος δείχνει «μόνο online» δεν έχουν PDF για λήψη: με το "
+                "εικονίδιο συνδέσμου ανοίγουν στον browser σας για προβολή/εκτύπωση "
+                "από εκεί.",
                 lambda: self.menu.button("documents"),
             ),
             Step(
@@ -1673,6 +1718,7 @@ class MainWindow(QMainWindow):
             self._panel_settled(True)
 
     def start_tour(self) -> None:
+        self._tour_pending = False
         if self._tour is not None:
             self._tour.deleteLater()
         self._tour = Tour(self, self._tour_steps())
@@ -1727,7 +1773,29 @@ class MainWindow(QMainWindow):
         if self._prefs.value("tour_seen", False, type=bool):
             repo.set_meta(self.conn, "tour_seen", "1")
             return
+        # Νέα εγκατάσταση με «εκκίνηση στο tray»: στην πρώτη εκκίνηση το παράθυρο
+        # κρύβεται (_setup_tray) πριν προλάβει να τρέξει αυτό. Ξεκινώντας την
+        # ξενάγηση πάνω σε κρυμμένο παράθυρο, η επικάλυψη ζωγραφιζόταν σε αόρατο
+        # γονέα και «καιγόταν» άδεια. Δεν τη σημειώνουμε ως ιδωμένη· μένει
+        # εκκρεμής και ξεκινά την πρώτη φορά που ανοίγει το παράθυρο από το tray
+        # (Tray.show_window -> notify_shown).
+        if not self.isVisible():
+            self._tour_pending = True
+            return
         self.start_tour()
+
+    def notify_shown(self) -> None:
+        """Το παράθυρο μόλις έγινε ορατό από το tray — δείξε εκκρεμή ξενάγηση.
+
+        Καλείται από το Tray.show_window. Ο φρουρός στο _maybe_first_run_tour
+        (meta + ορατότητα) το κάνει idempotent: αφού ιδωθεί η ξενάγηση, το
+        tour_seen μπαίνει και δεν ξαναεμφανίζεται.
+        """
+        if not getattr(self, "_tour_pending", False):
+            return
+        # Μικρή καθυστέρηση ώστε το παράθυρο να έχει ζωγραφιστεί και τα widgets
+        # να έχουν έγκυρη γεωμετρία για τον φωτισμό των βημάτων.
+        QTimer.singleShot(300, self._maybe_first_run_tour)
 
     def on_password(self) -> None:
         was = crypto_mod.is_protected(self.settings.enckey_path)

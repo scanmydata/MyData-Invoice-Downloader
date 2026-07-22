@@ -487,3 +487,37 @@ def download_viewer_only(
             saved += 1
             progress(f"  ✓ {label}: PDF ({size:,} B)")
     return saved, skipped, failed
+
+
+def save_online_only_pdf(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    row: sqlite3.Row,
+    pdf_bytes: bytes,
+) -> tuple[Path, int]:
+    """Αρχειοθετεί ένα PDF που κατέβασε ο ίδιος ο χρήστης από τον browser του.
+
+    Για τα «μόνο online» παραστατικά που ο πάροχος δείχνει πίσω από έλεγχο
+    ανθρώπου (π.χ. Cloudflare), ο χρήστης ανοίγει τη σελίδα, περνά τον έλεγχο ως
+    άνθρωπος και αποθηκεύει/τυπώνει το PDF. Εδώ απλώς παίρνουμε το αρχείο που
+    ήδη κατέβασε και το βάζουμε στο σωστό όνομα/φάκελο (το ίδιο σχήμα με την
+    αυτόματη λήψη), σημειώνοντάς το ως «Ελήφθη». Καμία επικοινωνία με τον
+    πάροχο — δουλεύουμε πάνω σε αρχείο που υπάρχει ήδη στον δίσκο.
+
+    Το `row` προέρχεται από `repo.viewer_only_documents` (έχει client_id/vat/
+    label). Επιστρέφει (τελική διαδρομή, μέγεθος). Σφάλμα αν δεν είναι PDF.
+    """
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise ValueError("Το αρχείο δεν είναι PDF")
+    doc = _doc_from_row(row)
+    path = resolve_path(
+        settings.storage_root, row["client_vat"], doc,
+        client_label=row["client_label"],
+    )
+    size, sha = write_atomic(path, pdf_bytes)
+    repo.mark_downloaded(
+        conn, row["client_id"], row["mark"],
+        str(path.relative_to(settings.storage_root)), size, sha,
+    )
+    conn.commit()
+    return path, size

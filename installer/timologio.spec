@@ -56,7 +56,9 @@ a = Analysis(
         "PySide6.QtBluetooth", "PySide6.QtNfc", "PySide6.QtPositioning",
         "PySide6.QtSensors", "PySide6.QtSerialPort", "PySide6.QtTest",
         "PySide6.QtDesigner", "PySide6.QtHelp", "PySide6.QtOpenGL",
-        "PySide6.QtOpenGLWidgets", "PySide6.QtSql", "PySide6.QtPdf", "PySide6.QtPdfWidgets",
+        "PySide6.QtOpenGLWidgets", "PySide6.QtSql", "PySide6.QtPdfWidgets",
+        # ΣΗΜ.: το PySide6.QtPdf ΔΕΝ εξαιρείται πλέον — το χρειάζεται η μαζική
+        # εκτύπωση (gui/printing.py) για να αποδώσει τα PDF στον εκτυπωτή.
         "tkinter", "matplotlib", "numpy", "pandas", "PIL", "scipy",
     ],
     win_no_prefer_redirects=False,

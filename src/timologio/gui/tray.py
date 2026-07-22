@@ -51,6 +51,12 @@ class Tray(QSystemTrayIcon):
         self._window.showNormal()
         self._window.raise_()
         self._window.activateWindow()
+        # Πρώτο άνοιγμα από το tray μετά από νέα εγκατάσταση με «εκκίνηση στο
+        # tray»: εδώ δείχνεται η ξενάγηση που δεν μπόρεσε να ξεκινήσει όσο το
+        # παράθυρο ήταν κρυμμένο. Idempotent — δεν κάνει τίποτα αν έχει ιδωθεί.
+        notify = getattr(self._window, "notify_shown", None)
+        if callable(notify):
+            notify()
 
     def quit_app(self) -> None:
         setattr(self._window, "_really_quit", True)
