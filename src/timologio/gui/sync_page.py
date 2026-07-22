@@ -42,7 +42,8 @@ _COLS: list[tuple[str, int, str]] = [
 _PRESETS: list[tuple[str, str]] = [
     ("Τρέχων μήνας", "month"),
     ("Προηγούμενος μήνας", "prev_month"),
-    ("Τρίμηνο", "quarter"),
+    ("Τρέχον τρίμηνο", "quarter"),
+    ("Προηγούμενο τρίμηνο", "prev_quarter"),
     ("Φέτος", "year"),
     ("Πέρσι", "prev_year"),
 ]
@@ -59,6 +60,13 @@ def _period(key: str) -> tuple[date, date]:
     if key == "quarter":
         start_month = 3 * ((today.month - 1) // 3) + 1
         return today.replace(month=start_month, day=1), today
+    if key == "prev_quarter":
+        # Αρχή τρέχοντος τριμήνου, πίσω μία ημέρα -> μέσα στο προηγούμενο τρίμηνο,
+        # μετά η αρχή/τέλος εκείνου του τριμήνου (τέλος = αρχή τρέχοντος − 1 ημέρα).
+        cur_start = today.replace(month=3 * ((today.month - 1) // 3) + 1, day=1)
+        prev_end = cur_start.fromordinal(cur_start.toordinal() - 1)
+        prev_start = prev_end.replace(month=3 * ((prev_end.month - 1) // 3) + 1, day=1)
+        return prev_start, prev_end
     if key == "prev_year":
         return date(today.year - 1, 1, 1), date(today.year - 1, 12, 31)
     return today.replace(month=1, day=1), today

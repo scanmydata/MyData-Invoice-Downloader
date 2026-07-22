@@ -1,14 +1,15 @@
-"""Μαζική εκτύπωση των PDF των επιλεγμένων παραστατικών.
+"""Μαζική εκτύπωση των PDF των επιλεγμένων παραστατικών, με προεπισκόπηση.
 
 Ο λογιστής θέλει συχνά να τυπώσει με τη μία όλα τα τιμολόγια που μόλις κατέβασε
-(π.χ. για τον φάκελο ενός πελάτη). Εδώ φορτώνουμε κάθε PDF με το ``QtPdf`` και το
-στέλνουμε σε **μία** εργασία εκτύπωσης, ώστε ο χρήστης να διαλέξει εκτυπωτή μία
-φορά και να μη χρειάζεται να ανοίγει ένα-ένα τα αρχεία.
+(π.χ. για τον φάκελο ενός πελάτη). Ανοίγουμε **native προεπισκόπηση**
+(``QPrintPreviewDialog``): ο χρήστης βλέπει όλες τις σελίδες, διαλέγει εκτυπωτή
+και τυπώνει από τη γραμμή εργαλείων της προεπισκόπησης — μία εργασία, χωρίς να
+ανοίγει ένα-ένα τα αρχεία.
 
-Γιατί render-σε-εικόνα και όχι απευθείας: το Qt δεν τυπώνει PDF κατευθείαν. Το
-``QPdfDocument`` όμως στοιχειοθετεί τη σελίδα σε εικόνα, την οποία ζωγραφίζουμε
-στον ``QPrinter``. Το DPI της απόδοσης το φράζουμε (RENDER_DPI) ώστε ένα A4 να
-μη γίνεται εικόνα εκατοντάδων MB — για κείμενο τιμολογίου είναι υπεραρκετό.
+Γιατί render-σε-εικόνα: το Qt δεν τυπώνει PDF κατευθείαν. Το ``QPdfDocument``
+στοιχειοθετεί κάθε σελίδα σε εικόνα, την οποία ζωγραφίζουμε στον ``QPrinter``. Η
+προεπισκόπηση ξαναζητά ζωγράφισμα σε κάθε zoom/σελιδοποίηση, οπότε κρατάμε
+**cache** των εικόνων ανά σελίδα ώστε να μένει responsive.
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from pathlib import Path
 from PySide6.QtCore import QRect, QSize, Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtPdf import QPdfDocument
-from PySide6.QtPrintSupport import QPrintDialog, QPrinter
-from PySide6.QtWidgets import QApplication, QDialog, QProgressDialog, QWidget
+from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog
+from PySide6.QtWidgets import QApplication, QWidget
 
 log = logging.getLogger(__name__)
 
@@ -35,91 +36,93 @@ def _load(doc: QPdfDocument, path: Path) -> bool:
         doc.load(str(path))
     except Exception:  # noqa: BLE001
         return False
-    # Το None_ (=0) σημαίνει «καμία» βλάβη· κρατάμε και τον έλεγχο σελίδων ως
-    # πρακτικό σήμα επιτυχίας, ανεξάρτητα από ονόματα enum ανά έκδοση.
     return doc.status() == QPdfDocument.Status.Ready and doc.pageCount() > 0
 
 
-def print_pdfs(paths: list[Path], parent: QWidget | None = None) -> tuple[int, int, bool]:
-    """Τυπώνει όλα τα PDF σε μία εργασία, αφού ο χρήστης διαλέξει εκτυπωτή.
+def print_pdfs(paths: list[Path], parent: QWidget | None = None) -> tuple[int, int]:
+    """Ανοίγει προεπισκόπηση εκτύπωσης για όλα τα PDF. Επιστρέφει ``(έτοιμα,
+    απέτυχαν)`` — «έτοιμα» = παραστατικά που μπήκαν στην προεπισκόπηση.
 
-    Επιστρέφει ``(τυπώθηκαν, απέτυχαν, ακυρώθηκε)``. ``ακυρώθηκε=True`` όταν ο
-    χρήστης έκλεισε τον διάλογο εκτυπωτή — τότε δεν έγινε τίποτα.
+    Η ίδια η εκτύπωση γίνεται από τη γραμμή εργαλείων της προεπισκόπησης.
     """
     paths = [p for p in paths if p.exists()]
     if not paths:
-        return 0, 0, False
+        return 0, 0
 
-    printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-    dialog = QPrintDialog(printer, parent)
-    dialog.setWindowTitle("Μαζική εκτύπωση παραστατικών")
-    if dialog.exec() != QDialog.DialogCode.Accepted:
-        return 0, 0, True
-
-    # Η στοιχειοθέτηση κάθε σελίδας σε εικόνα και, κυρίως, το τελικό «σπρώξιμο»
-    # στην ουρά του εκτυπωτή αργούν. Δείχνουμε modal παράθυρο αναμονής/προόδου
-    # ώστε ο χρήστης να μη νομίζει ότι κόλλησε η εφαρμογή.
-    total = len(paths)
-    progress = QProgressDialog("Προετοιμασία εκτύπωσης…", "Ακύρωση", 0, total, parent)
-    progress.setWindowTitle("Εκτύπωση")
-    progress.setWindowModality(Qt.WindowModality.WindowModal)
-    progress.setMinimumDuration(0)
-    progress.setAutoClose(False)
-    progress.setAutoReset(False)
-    progress.setValue(0)
-    QApplication.processEvents()
-
-    painter = QPainter()
-    if not painter.begin(printer):
-        log.warning("Δεν άνοιξε ο εκτυπωτής για εκτύπωση")
-        progress.close()
-        return 0, total, False
-
-    doc = QPdfDocument(parent)
-    printed = failed = 0
-    first_page = True
-    cancelled = False
+    # Φορτώνουμε μία φορά κάθε έγγραφο· τα κρατάμε ζωντανά όσο ζει η
+    # προεπισκόπηση ώστε να αποδίδουμε σελίδες on-demand.
+    QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+    docs: list[QPdfDocument] = []
+    pages: list[tuple[QPdfDocument, int]] = []
+    failed = 0
     try:
-        for i, path in enumerate(paths):
-            if progress.wasCanceled():
-                cancelled = True
-                break
-            progress.setValue(i)
-            progress.setLabelText(f"Εκτύπωση {i + 1} από {total}…")
-            QApplication.processEvents()
-            if not _load(doc, path):
+        for path in paths:
+            doc = QPdfDocument(parent)
+            if _load(doc, path):
+                docs.append(doc)
+                pages.extend((doc, i) for i in range(doc.pageCount()))
+            else:
                 failed += 1
                 log.warning("Το PDF δεν φορτώθηκε για εκτύπωση: %s", path)
-                continue
-            for page in range(doc.pageCount()):
-                if not first_page:
-                    printer.newPage()
-                first_page = False
-                _draw_page(painter, printer, doc, page)
-            printed += 1
-        # Το painter.end() στέλνει την εργασία στον εκτυπωτή — το πιο αργό βήμα.
-        progress.setLabelText("Αποστολή στον εκτυπωτή…")
-        progress.setValue(total)
-        QApplication.processEvents()
     finally:
-        painter.end()
-        doc.close()
-        progress.close()
-    return printed, failed, cancelled
+        QApplication.restoreOverrideCursor()
+
+    if not pages:
+        return 0, failed
+
+    cache: dict[tuple[int, int], QImage] = {}
+
+    def render(printer: QPrinter) -> None:
+        painter = QPainter()
+        if not painter.begin(printer):
+            return
+        try:
+            first = True
+            for doc, page in pages:
+                if not first:
+                    printer.newPage()
+                first = False
+                _draw_page(painter, printer, doc, page, cache)
+        finally:
+            painter.end()
+
+    printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+    dialog = QPrintPreviewDialog(printer, parent)
+    dialog.setWindowTitle("Προεπισκόπηση εκτύπωσης")
+    if parent is not None:
+        dialog.resize(parent.size())
+    dialog.paintRequested.connect(render)
+    # Το πρώτο render όλων των σελίδων μπορεί να αργήσει — δείχνουμε αναμονή.
+    QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+    try:
+        dialog.exec()
+    finally:
+        QApplication.restoreOverrideCursor()
+        for doc in docs:
+            doc.close()
+    return len(docs), failed
 
 
 def _draw_page(
-    painter: QPainter, printer: QPrinter, doc: QPdfDocument, page: int
+    painter: QPainter,
+    printer: QPrinter,
+    doc: QPdfDocument,
+    page: int,
+    cache: dict[tuple[int, int], QImage],
 ) -> None:
-    """Αποδίδει μία σελίδα σε εικόνα και τη ζωγραφίζει, κεντραρισμένη, στη σελίδα.
+    """Αποδίδει (με cache) μία σελίδα σε εικόνα και τη ζωγραφίζει κεντραρισμένη.
 
     Διατηρεί τις αναλογίες: ένα A4 τιμολόγιο δεν πρέπει να «τεντωθεί» στο πλάτος
     ενός φακέλου εκτυπωτή με άλλη αναλογία.
     """
-    pt = doc.pagePointSize(page)  # σε points (1/72 ίντσας)
-    w = max(1, round(pt.width() / 72.0 * RENDER_DPI))
-    h = max(1, round(pt.height() / 72.0 * RENDER_DPI))
-    image: QImage = doc.render(page, QSize(w, h))
+    key = (id(doc), page)
+    image = cache.get(key)
+    if image is None:
+        pt = doc.pagePointSize(page)  # σε points (1/72 ίντσας)
+        w = max(1, round(pt.width() / 72.0 * RENDER_DPI))
+        h = max(1, round(pt.height() / 72.0 * RENDER_DPI))
+        image = doc.render(page, QSize(w, h))
+        cache[key] = image
     if image.isNull():
         return
 

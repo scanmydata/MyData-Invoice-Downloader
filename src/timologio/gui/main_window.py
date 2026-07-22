@@ -100,6 +100,7 @@ _COLUMN_SPEC: list[tuple[str, int, str]] = [
 #: Σύντομη ετικέτα: το «Λείπει κλειδί API» έτρωγε 110px για να πει το ίδιο.
 _STATUS_READY = "Διαθέσιμος"
 _STATUS_NO_KEY = "Χωρίς κλειδί"
+_STATUS_DISABLED = "Ανενεργός"
 _COLUMNS = [c[0] for c in _COLUMN_SPEC]
 _COL_CHECK, _COL_VAT, _COL_LABEL, _COL_STATUS = 0, 1, 2, 3
 _COL_LAST = 9
@@ -144,6 +145,7 @@ class MainWindow(QMainWindow):
         self._tour: Tour | None = None
         self._stale: set[str] = set()
         self._title_bar_done = False
+        self._reload_timer: QTimer | None = None
 
         # Το θέμα εφαρμόζεται πριν χτιστούν τα widgets, ώστε τα εικονίδια να
         # βαφτούν σωστά από την πρώτη φορά. Προεπιλογή το σκούρο.
@@ -441,7 +443,7 @@ class MainWindow(QMainWindow):
         selbar.addWidget(self.lbl_selcount)
         selbar.addStretch()
 
-        hint = QLabel("Κλικ στο κουτάκι ή διπλό κλικ / πλήκτρο διαστήματος")
+        hint = QLabel("Κλικ στο κουτάκι για επιλογή · διπλό κλικ: ενεργός/ανενεργός")
         hint.setObjectName("muted")
         selbar.addWidget(hint)
 
@@ -490,13 +492,9 @@ class MainWindow(QMainWindow):
         backspace = QShortcut(QKeySequence(Qt.Key.Key_Backspace), self)
         backspace.setContext(Qt.ShortcutContext.WindowShortcut)
         backspace.activated.connect(self._delete_selected)
-        # Πλήκτρο διαστήματος: (απο)επιλέγει τις φωτισμένες γραμμές — ο
-        # γρήγορος τρόπος αφού τις διαλέξεις με Shift/Ctrl+κλικ.
-        space = QShortcut(QKeySequence(Qt.Key.Key_Space), self.table)
-        space.setContext(Qt.ShortcutContext.WidgetShortcut)
-        space.activated.connect(
-            lambda: self._toggle_checked({i.row() for i in self.table.selectedIndexes()})
-        )
+        # Το κουτάκι επιλογής αλλάζει ΜΟΝΟ με άμεσο κλικ πάνω του ή με τα κουμπιά
+        # «Επιλογή/Αποεπιλογή όλων» — όχι με διπλό κλικ ή πλήκτρο διαστήματος,
+        # ώστε να μη μπερδεύεται με την ενεργοποίηση/απενεργοποίηση πελάτη.
         holder_box.addWidget(self.table)
         splitter.addWidget(table_holder)
 
@@ -543,7 +541,12 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------- δεδομένα
     def reload_clients(self) -> None:
-        rows = repo.list_clients(self.conn)
+        all_clients = repo.list_clients(self.conn)
+        rows = list(all_clients)
+        # Κρατάμε την τρέχουσα επιλογή ΚΑΤΑ ΑΦΜ, όχι κατά index: μετά το resort ο
+        # ίδιος index δείχνει άλλον πελάτη — γι' αυτό «άλλαζε μόνος του» ο ενεργός
+        # πελάτης μετά τη λήψη. Την επαναφέρουμε στο τέλος (_reselect_vats).
+        keep_selected = set(self._selected_vats(only_ready=False))
         stats = {
             r["client_id"]: r
             for r in self.conn.execute(
@@ -595,7 +598,14 @@ class MainWindow(QMainWindow):
             uncls = (s["u"] if s else 0) or 0
             income = (s["income"] if s else 0.0) or 0.0
             expense = (s["expense"] if s else 0.0) or 0.0
-            is_ready = row["status"] == "ready"
+            client_status = row["status"]
+            is_ready = client_status == "ready"
+            is_disabled = client_status == "disabled"
+            status_label = (
+                _STATUS_READY if is_ready
+                else _STATUS_DISABLED if is_disabled
+                else _STATUS_NO_KEY
+            )
 
             check = QTableWidgetItem()
             # Επιλέξιμοι ΟΛΟΙ, ακόμη κι όσοι δεν έχουν κλειδί: το τσεκάρισμα
@@ -621,7 +631,7 @@ class MainWindow(QMainWindow):
             cells = {
                 _COL_VAT: row["vat"],
                 _COL_LABEL: row["label"] or "",
-                _COL_STATUS: _STATUS_READY if is_ready else _STATUS_NO_KEY,
+                _COL_STATUS: status_label,
                 4: str(total), 5: str(done), 6: str(uncls),
                 7: money(income) if income else "—",
                 8: money(expense) if expense else "—",
@@ -638,7 +648,11 @@ class MainWindow(QMainWindow):
                 else:
                     item = QTableWidgetItem(text)
                 if col == _COL_STATUS:
-                    item.setForeground(QColor(CURRENT.ok if is_ready else CURRENT.bad))
+                    item.setForeground(QColor(
+                        CURRENT.ok if is_ready
+                        else CURRENT.muted if is_disabled
+                        else CURRENT.bad
+                    ))
                 if col == 5 and done:
                     item.setForeground(QColor(CURRENT.ok))
                 if col == 6 and uncls:
@@ -647,14 +661,19 @@ class MainWindow(QMainWindow):
                     item.setForeground(QColor(CURRENT.ok))
                 if col == 8 and expense:
                     item.setForeground(QColor(CURRENT.warn))
+                # Ανενεργός πελάτης: όλη η γραμμή γκριζαρισμένη (εκτός του
+                # κελιού κατάστασης που κρατά το δικό του χρώμα).
+                if is_disabled and col != _COL_STATUS:
+                    item.setForeground(QColor(CURRENT.muted))
                 self.table.setItem(i, col, item)
 
         self.table.setSortingEnabled(True)
         resort(self.table)
         self._highlight_pinned()
+        self._reselect_vats(keep_selected)
         self.table.blockSignals(False)
 
-        all_rows = repo.list_clients(self.conn)
+        all_rows = all_clients
         ready = sum(1 for r in all_rows if r["status"] == "ready")
         self.status.showMessage(
             f"{len(all_rows)} πελάτες · {ready} διαθέσιμοι · "
@@ -668,6 +687,27 @@ class MainWindow(QMainWindow):
         # Σημειώνουμε την τρέχουσα κατάσταση του αρχείου: ο watcher ανανεώνει
         # μόνο όταν αλλάξει από ΑΛΛΟΝ (δείτε _poll_db).
         self._last_db_mtime = self._db_mtime()
+
+    def _reselect_vats(self, vats: set[str]) -> None:
+        """Επαναφέρει την επιλογή του πίνακα κατά ΑΦΜ μετά από rebuild.
+
+        Καλείται με μπλοκαρισμένα signals, ώστε να μην πυροδοτηθεί το
+        _on_selection κατά την ανανέωση — η επιλογή απλώς «ακολουθεί» τον ίδιο
+        πελάτη αντί να μένει σε σταθερή γραμμή.
+        """
+        if not vats:
+            return
+        from PySide6.QtCore import QItemSelectionModel
+
+        sel = self.table.selectionModel()
+        sel.clearSelection()
+        flag = (QItemSelectionModel.SelectionFlag.Select
+                | QItemSelectionModel.SelectionFlag.Rows)
+        model = self.table.model()
+        for i in range(self.table.rowCount()):
+            vit = self.table.item(i, _COL_VAT)
+            if vit is not None and vit.text() in vats:
+                sel.select(model.index(i, 0), flag)
 
     def _set_pinned(self, vat: str | None) -> None:
         """Ορίζει τον πελάτη που «κρατιέται» στην κορυφή και φωτίζεται.
@@ -696,19 +736,28 @@ class MainWindow(QMainWindow):
     def _on_double_click(self) -> None:
         """Διπλό κλικ σε γραμμή πελάτη.
 
-        Χωρίς κλειδί, το μόνο χρήσιμο είναι να το συμπληρώσει· με κλειδί, το
-        πιο συχνό είναι να τον (απο)επιλέξει για λήψη.
+        Χωρίς κλειδί, το μόνο χρήσιμο είναι να το συμπληρώσει (άνοιγμα
+        επεξεργασίας). Με κλειδί, εναλλάσσει ενεργό/ανενεργό: ο ανενεργός
+        εξαιρείται από τη λήψη αλλά μένει στη λίστα.
         """
         rows = {i.row() for i in self.table.selectedIndexes()}
-        if len(rows) == 1:
-            row = next(iter(rows))
-            status = self.table.item(row, _COL_STATUS)
-            vat_item = self.table.item(row, _COL_VAT)
-            if status is not None and vat_item is not None:
-                if status.text() != _STATUS_READY:
-                    self.on_edit_client(vat_item.text())
-                    return
-        self._toggle_checked(rows)
+        if len(rows) != 1:
+            return
+        row = next(iter(rows))
+        status = self.table.item(row, _COL_STATUS)
+        vat_item = self.table.item(row, _COL_VAT)
+        if status is None or vat_item is None:
+            return
+        if status.text() == _STATUS_NO_KEY:
+            self.on_edit_client(vat_item.text())
+            return
+        self._toggle_active(vat_item.text(), status.text() == _STATUS_DISABLED)
+
+    def _toggle_active(self, vat: str, currently_disabled: bool) -> None:
+        """Ενεργοποιεί/απενεργοποιεί έναν πελάτη και ανανεώνει τη λίστα."""
+        repo.set_client_disabled(self.conn, vat, not currently_disabled)
+        log.info("Πελάτης %s: %s", vat, "ενεργός" if currently_disabled else "ανενεργός")
+        self.reload_clients()
 
     def _toggle_checked(self, rows: set[int]) -> None:
         self.table.blockSignals(True)
@@ -817,7 +866,10 @@ class MainWindow(QMainWindow):
 
     def _on_selection(self, animate: bool = True) -> None:
         vats = self._selected_vats(only_ready=False)
-        self.menu.set_enabled_action("documents", len(vats) == 1)
+        # Όχι πρόσβαση στα Παραστατικά όσο τρέχει λήψη (η βάση αλλάζει συνεχώς).
+        self.menu.set_enabled_action(
+            "documents", len(vats) == 1 and self._thread is None
+        )
         # Ο ενεργός πελάτης (μονή επιλογή) γίνεται ο καρφιτσωμένος, ώστε στην
         # επόμενη ανανέωση να εμφανίζεται στην κορυφή. Δεν ανανεώνουμε τώρα —
         # θα ήταν ενοχλητικό να πηδά η γραμμή κάτω από το ποντίκι.
@@ -1072,6 +1124,19 @@ class MainWindow(QMainWindow):
         docs.triggered.connect(self._open_documents)
         docs.setEnabled(len(selected) == 1)
         menu.addAction(docs)
+
+        # Ενεργός/Ανενεργός — μόνο για μονή επιλογή πελάτη με κλειδί.
+        status_item = self.table.item(row, _COL_STATUS)
+        status_text = status_item.text() if status_item is not None else ""
+        if len(selected) == 1 and status_text in (_STATUS_READY, _STATUS_DISABLED):
+            is_off = status_text == _STATUS_DISABLED
+            toggle = QAction(
+                "Ενεργοποίηση πελάτη" if is_off else "Απενεργοποίηση πελάτη", self
+            )
+            toggle.triggered.connect(
+                lambda _=False, v=vat, d=is_off: self._toggle_active(v, d)
+            )
+            menu.addAction(toggle)
         menu.addSeparator()
 
         wipe = QAction(icon("wipe", CURRENT.warn), "Εκκαθάριση ληφθέντων", self)
@@ -1478,8 +1543,9 @@ class MainWindow(QMainWindow):
             "σας, τα αποθηκεύετε ως PDF και η εφαρμογή τα αρχειοθετεί μόνη της. "
             "Δουλεύει και για παρόχους πίσω από έλεγχο «είστε άνθρωπος» "
             "(π.χ. Epsilon, Megasoft).<br><br>"
-            "<b>Αυτόματα</b>: αόρατος browser τυπώνει τη σελίδα σε PDF — γρήγορο, "
-            "αλλά όσα κρύβονται πίσω από τέτοιον έλεγχο θα μείνουν ως έχουν."
+            "<b>Αυτόματα</b>: πρώτα αόρατος browser (γρήγορα, παράλληλα)· για όσα "
+            "κρύβονται πίσω από έλεγχο «είστε άνθρωπος» ανοίγουν <b>ορατά "
+            "παράθυρα</b> για να περάσετε εσείς τον έλεγχο, και μετά αποθηκεύονται."
         )
         btn_browser = box.addButton("Μέσω του browser μου", QMessageBox.ButtonRole.AcceptRole)
         btn_auto = box.addButton("Αυτόματα", QMessageBox.ButtonRole.ActionRole)
@@ -1680,11 +1746,12 @@ class MainWindow(QMainWindow):
                 "Ο πίνακας ανοίγει στα αχαρακτήριστα — αυτά που θέλουν δουλειά "
                 "από εσάς. Η μπλε ταινία σας το θυμίζει· «Καθαρισμός» για όλα.\n\n"
                 "Τα φίλτρα συνδυάζονται: π.χ. έξοδα ΚΑΙ ελήφθησαν PDF.\n\n"
-                "Τσεκάρετε παραστατικά και: «Εξαγωγή σε ZIP» για να τα πακετάρετε, "
-                "ή «Μαζική εκτύπωση» για να τα τυπώσετε όλα με μία εργασία.\n\n"
-                "Όσα ο πάροχος δείχνει «μόνο online» δεν έχουν PDF για λήψη: με το "
-                "εικονίδιο συνδέσμου ανοίγουν στον browser σας για προβολή/εκτύπωση "
-                "από εκεί.",
+                "Τσεκάρετε παραστατικά (η επιλογή μετράει ακόμη κι αν ένα φίλτρο "
+                "τα κρύβει) και: «Εξαγωγή σε ZIP» για να τα πακετάρετε, ή "
+                "«Μαζική εκτύπωση» που ανοίγει προεπισκόπηση και τυπώνει από εκεί.\n\n"
+                "Όσα ο πάροχος δείχνει «μόνο online» δεν έχουν PDF: με το εικονίδιο "
+                "συνδέσμου ανοίγει οδηγός που τα κατεβάζει μέσω του browser σας και "
+                "τα αρχειοθετεί μόνος του.",
                 lambda: self.menu.button("documents"),
             ),
             Step(
@@ -1891,7 +1958,19 @@ class MainWindow(QMainWindow):
         self.progress.setValue(self.progress.value() + 1)
         note = f", {failed} σφάλματα" if failed else ""
         self._log(f"   {vat}: {found} παραστατικά, {pdfs} PDF{note}")
-        self.reload_clients()
+        # Όχι πλήρες reload σε ΚΑΘΕ πελάτη (βαρύ: 2 queries + rebuild πίνακα).
+        # Το «μαζεύουμε» σε ~1.2s ώστε μια παρτίδα πολλών πελατών να μην
+        # ξαναχτίζει τη λίστα δεκάδες φορές. Το τελικό reload γίνεται στο τέλος.
+        self._reload_clients_throttled()
+
+    def _reload_clients_throttled(self) -> None:
+        if self._reload_timer is None:
+            self._reload_timer = QTimer(self)
+            self._reload_timer.setSingleShot(True)
+            self._reload_timer.setInterval(1200)
+            self._reload_timer.timeout.connect(self.reload_clients)
+        if not self._reload_timer.isActive():
+            self._reload_timer.start()
 
     def _on_totals(
         self, found: int, pdfs: int, no_url: int, viewer_only: int, failed: int
@@ -1912,6 +1991,8 @@ class MainWindow(QMainWindow):
         )
         totals = self._last_totals
         self._teardown()
+        if self._reload_timer is not None:
+            self._reload_timer.stop()
         self.reload_clients()
         self._on_selection()
         if completed:
@@ -1969,6 +2050,10 @@ class MainWindow(QMainWindow):
         self.menu.set_enabled_action("restore", not running)
         self.menu.set_enabled_action("add_client", not running)
         self.menu.set_enabled_action("online_pdf", not running)
+        # Κλείδωμα των Παραστατικών όσο τρέχει λήψη: η βάση αλλάζει συνεχώς και
+        # μια ανοιχτή προβολή θα έδειχνε ημιτελή/ασυνεπή δεδομένα.
+        single = len(self._selected_vats(only_ready=False)) == 1
+        self.menu.set_enabled_action("documents", not running and single)
         self._strip.setVisible(running)
         if running:
             self.progress.setRange(0, total)

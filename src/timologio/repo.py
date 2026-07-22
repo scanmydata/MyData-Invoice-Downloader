@@ -91,6 +91,28 @@ def get_client(conn: sqlite3.Connection, vat: str, crypto: Crypto) -> Client | N
     )
 
 
+def set_client_disabled(conn: sqlite3.Connection, vat: str, disabled: bool) -> None:
+    """Ενεργοποιεί/απενεργοποιεί πελάτη.
+
+    Ανενεργός (`disabled`) σημαίνει ότι εξαιρείται από τη λήψη — δεν εμφανίζεται
+    στη λίστα της σελίδας λήψης (φιλτράρεται με `status='ready'`), αλλά μένει στη
+    λίστα πελατών. Η επανενεργοποίηση ξαναϋπολογίζει την κατάσταση από τα
+    credentials (όπως το `upsert_client`), ώστε ένας χωρίς κλειδί να μη γίνει
+    κατά λάθος «ready».
+    """
+    if disabled:
+        conn.execute("UPDATE clients SET status='disabled' WHERE vat=?", (vat,))
+    else:
+        conn.execute(
+            """UPDATE clients SET status = CASE
+                   WHEN mydata_user_enc <> '' AND mydata_key_enc <> '' THEN 'ready'
+                   ELSE 'missing_key' END
+               WHERE vat=?""",
+            (vat,),
+        )
+    conn.commit()
+
+
 def delete_clients(conn: sqlite3.Connection, vats: list[str]) -> int:
     """Διαγράφει πελάτες και ό,τι κρέμεται από αυτούς.
 

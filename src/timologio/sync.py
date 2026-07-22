@@ -438,6 +438,95 @@ def sync_client(
     return stats
 
 
+def _render_viewer_batch(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    rows: list[sqlite3.Row],
+    *,
+    headed: bool,
+    patient: bool,
+    timeout: float,
+    workers: int,
+    progress: ProgressFn,
+    should_cancel: Callable[[], bool] | None,
+) -> tuple[int, int, list[sqlite3.Row]]:
+    """Αποδίδει μια παρτίδα «μόνο online» παράλληλα. Επιστρέφει (αποθηκεύτηκαν,
+    σφάλματα, όσα έμειναν κενά/ακυρώθηκαν).
+
+    Ανεξάρτητος renderer ανά thread (το CDP socket δεν είναι thread-safe). Οι
+    εγγραφές στη βάση γίνονται μόνο στο καλών νήμα (single writer). Δεν εκπέμπει
+    μήνυμα «παραμένει μόνο online» — αυτό το αποφασίζει ο καλών, αφού τρέξουν και
+    τα δύο περάσματα (headless -> ορατό headed).
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from .download.headless import HeadlessError, HeadlessRenderer
+
+    local = threading.local()
+    renderers: list[HeadlessRenderer] = []
+    rlock = threading.Lock()
+
+    def renderer_for_thread() -> HeadlessRenderer:
+        r = getattr(local, "renderer", None)
+        if r is None:
+            r = HeadlessRenderer(headed=headed)
+            local.renderer = r
+            with rlock:
+                renderers.append(r)
+        return r
+
+    def job(row: sqlite3.Row):
+        if should_cancel and should_cancel():
+            return row, "cancel", None
+        try:
+            pdf = renderer_for_thread().render_pdf(
+                row["downloading_invoice_url"], patient=patient, timeout=timeout
+            )
+        except HeadlessError as exc:
+            return row, "error", exc
+        return row, "ok", pdf
+
+    saved = failed = 0
+    remaining: list[sqlite3.Row] = []
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(job, row) for row in rows]
+            for fut in as_completed(futures):
+                row, kind, payload = fut.result()
+                label = row["client_label"] or row["client_vat"]
+                if kind == "cancel":
+                    remaining.append(row)
+                    continue
+                if kind == "error":
+                    failed += 1
+                    log.warning("Render απέτυχε (%s): %s", row["mark"], payload)
+                    progress(f"  ✗ {label}: σφάλμα browser")
+                    continue
+                pdf = payload
+                if pdf is None:
+                    remaining.append(row)
+                    continue
+                doc = _doc_from_row(row)
+                path = resolve_path(settings.storage_root, row["client_vat"], doc,
+                                    client_label=row["client_label"])
+                size, sha = write_atomic(path, pdf)
+                repo.mark_downloaded(
+                    conn, row["client_id"], row["mark"],
+                    str(path.relative_to(settings.storage_root)), size, sha,
+                )
+                conn.commit()
+                saved += 1
+                progress(f"  ✓ {label}: PDF ({size:,} B)")
+    finally:
+        for r in renderers:
+            try:
+                r.close()
+            except Exception:  # noqa: BLE001
+                pass
+    return saved, failed, remaining
+
+
 def download_viewer_only(
     conn: sqlite3.Connection,
     settings: Settings,
@@ -445,48 +534,57 @@ def download_viewer_only(
     vats: list[str] | None = None,
     progress: ProgressFn = _noop,
     should_cancel: Callable[[], bool] | None = None,
+    headed_fallback: bool = True,
 ) -> tuple[int, int, int]:
-    """Κατεβάζει με headless browser τα «μόνο online» παραστατικά.
+    """Κατεβάζει τα «μόνο online» παραστατικά, σε δύο περάσματα.
 
-    Ανοίγει μία φορά τον browser και τυπώνει κάθε σελίδα σε PDF. Όσα δεν
-    στοιχειοθετούνται (interactive Blazor/Cloudflare) μένουν «μόνο online».
+    1. **Headless, παράλληλα** (έως ``min(5, CPU)``): γρήγορο, αόρατο — πιάνει
+       τους παρόχους που στοιχειοθετούνται χωρίς έλεγχο «είστε άνθρωπος».
+    2. **Ορατό (headed) browser** για όσα έμειναν κενά (π.χ. πίσω από Cloudflare):
+       ανοίγει ορατά παράθυρα ώστε ο χρήστης να περάσει ο ίδιος τυχόν έλεγχο, και
+       μετά τυπώνουμε τη σελίδα σε PDF. **Δεν παρακάμπτουμε κανέναν έλεγχο** —
+       απλώς δεν κρύβουμε τον browser.
+
     Επιστρέφει (αποθηκεύτηκαν, παραλείφθηκαν, σφάλματα).
     """
-    from .download.headless import HeadlessError, HeadlessRenderer
+    from .download.headless import BrowserNotFound, find_browser
 
     rows = repo.viewer_only_documents(conn, vats)
     if not rows:
         return 0, 0, 0
+    if find_browser() is None:
+        raise BrowserNotFound(
+            "Δεν βρέθηκε Microsoft Edge ή Google Chrome για τη λήψη των «μόνο "
+            "online» παραστατικών."
+        )
 
-    saved = skipped = failed = 0
-    with HeadlessRenderer() as renderer:
-        for row in rows:
-            if should_cancel and should_cancel():
-                break
-            label = row["client_label"] or row["client_vat"]
-            try:
-                pdf = renderer.render_pdf(row["downloading_invoice_url"])
-            except HeadlessError as exc:
-                failed += 1
-                log.warning("Headless render απέτυχε (%s): %s", row["mark"], exc)
-                progress(f"  ✗ {label}: σφάλμα browser")
-                continue
-            if pdf is None:
-                skipped += 1
-                progress(f"  ⧉ {label}: παραμένει μόνο online (δεν στοιχειοθετείται)")
-                continue
-            doc = _doc_from_row(row)
-            path = resolve_path(settings.storage_root, row["client_vat"], doc,
-                                client_label=row["client_label"])
-            size, sha = write_atomic(path, pdf)
-            repo.mark_downloaded(
-                conn, row["client_id"], row["mark"],
-                str(path.relative_to(settings.storage_root)), size, sha,
-            )
-            conn.commit()
-            saved += 1
-            progress(f"  ✓ {label}: PDF ({size:,} B)")
-    return saved, skipped, failed
+    cpu = os.cpu_count() or 1
+    # Πέρασμα 1: headless, παράλληλα.
+    saved, failed, remaining = _render_viewer_batch(
+        conn, settings, rows, headed=False, patient=False, timeout=30.0,
+        workers=max(1, min(5, cpu, len(rows))),
+        progress=progress, should_cancel=should_cancel,
+    )
+
+    # Πέρασμα 2: ορατός headed browser για όσα έμειναν, αν το θέλει ο χρήστης.
+    cancelled = bool(should_cancel and should_cancel())
+    if headed_fallback and remaining and not cancelled:
+        progress(
+            f"  ▶ {len(remaining)} παραστατικά ανοίγουν σε ΟΡΑΤΟ browser — "
+            "λύστε τυχόν έλεγχο «είστε άνθρωπος» στο παράθυρο και θα αποθηκευτούν."
+        )
+        s2, f2, remaining = _render_viewer_batch(
+            conn, settings, remaining, headed=True, patient=True, timeout=150.0,
+            workers=max(1, min(5, cpu, len(remaining))),
+            progress=progress, should_cancel=should_cancel,
+        )
+        saved += s2
+        failed += f2
+
+    for row in remaining:
+        label = row["client_label"] or row["client_vat"]
+        progress(f"  ⧉ {label}: παραμένει μόνο online")
+    return saved, len(remaining), failed
 
 
 def save_online_only_pdf(

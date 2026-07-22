@@ -147,9 +147,10 @@ def build(p: Palette) -> str:
     # Το ✓ γεννιέται εδώ γιατί το χρώμα του εξαρτάται από το θέμα. Η εισαγωγή
     # είναι τοπική: το icons.py χρειάζεται QGuiApplication, ενώ αυτό το module
     # φορτώνεται και από κώδικα χωρίς GUI (π.χ. tests του CLI).
-    from .icons import indicator_image
+    from .icons import arrow_image, indicator_image
 
     check = indicator_image(p.on_accent)
+    arrow = arrow_image(p.muted)
     return f"""
 QWidget {{ background: {p.bg}; color: {p.txt}; font-size: 13px; }}
 QMainWindow, QDialog {{ background: {p.bg}; }}
@@ -209,7 +210,13 @@ QLineEdit, QComboBox, QDateEdit, QSpinBox {{
 }}
 QLineEdit:focus, QComboBox:focus, QDateEdit:focus {{ border-color: {p.accent}; }}
 QLineEdit:disabled, QComboBox:disabled, QDateEdit:disabled {{ color: {p.muted}; }}
-QComboBox::drop-down, QDateEdit::drop-down {{ border: none; width: 18px; }}
+QComboBox::drop-down, QDateEdit::drop-down {{
+    border: none; width: 20px;
+    subcontrol-origin: padding; subcontrol-position: center right;
+}}
+QComboBox::down-arrow, QDateEdit::down-arrow {{
+    image: url("{arrow}"); width: 12px; height: 12px;
+}}
 QComboBox QAbstractItemView {{
     background: {p.panel};
     border: 1px solid {p.line};

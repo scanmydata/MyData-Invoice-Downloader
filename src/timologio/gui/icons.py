@@ -220,6 +220,46 @@ def indicator_image(color: str, size: int = 14) -> str:
     return result
 
 
+#: Το βελάκι «κάτω» για QComboBox/QDateEdit. Ίδια λογική με το ✓: PNG (όχι SVG
+#: data-uri) ώστε να μη χρειάζεται το qsvg plugin στο bundle.
+_ARROW_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+    'stroke="{color}" stroke-width="3" stroke-linecap="round" '
+    'stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>'
+)
+
+_arrow_cache: dict[tuple[str, int], str] = {}
+
+
+def arrow_image(color: str, size: int = 12) -> str:
+    """Γράφει το βελάκι «κάτω» ως PNG και επιστρέφει διαδρομή για το `image:`.
+
+    Χρησιμοποιείται στο QSS του θέματος για να ξαναφανεί ο δείκτης του
+    drop-down στα QComboBox/QDateEdit: όταν το QSS ορίζει `::drop-down`, το Qt
+    σταματά να ζωγραφίζει το native βελάκι και το πεδίο έμοιαζε χωρίς
+    ημερολόγιο.
+    """
+    key = (color, size)
+    if key in _arrow_cache:
+        return _arrow_cache[key]
+
+    stem = f"arrow-{color.lstrip('#')}-{size}"
+    target = _ui_cache_dir() / f"{stem}.png"
+    svg = _ARROW_SVG.format(color=color)
+    for scale, path in ((1, target), (2, target.with_name(f"{stem}@2x.png"))):
+        pixmap = QPixmap(QSize(size * scale, size * scale))
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        QSvgRenderer(QByteArray(svg.encode("utf-8"))).render(painter)
+        painter.end()
+        pixmap.save(str(path), "PNG")
+
+    result = str(target).replace("\\", "/")
+    _arrow_cache[key] = result
+    return result
+
+
 _logo_cache: dict[int, QPixmap] = {}
 
 

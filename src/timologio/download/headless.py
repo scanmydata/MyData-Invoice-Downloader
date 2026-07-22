@@ -109,13 +109,24 @@ class HeadlessRenderer:
             pdf = r.render_pdf(url)
     """
 
-    def __init__(self, browser: Path | None = None, *, launch_timeout: float = 20.0):
+    def __init__(
+        self,
+        browser: Path | None = None,
+        *,
+        launch_timeout: float = 20.0,
+        headed: bool = False,
+    ):
         self._browser = browser or find_browser()
         if self._browser is None:
             raise BrowserNotFound(
                 "Δεν βρέθηκε Microsoft Edge ή Google Chrome. Εγκαταστήστε έναν "
                 "από τους δύο για τη λήψη των «μόνο online» παραστατικών."
             )
+        # Ορατό (headed) παράθυρο: για σελίδες που ένας πραγματικός browser
+        # στοιχειοθετεί ενώ ο headless όχι (π.χ. πίσω από έλεγχο «είστε
+        # άνθρωπος» — τον λύνει ο χρήστης στο ίδιο το ορατό παράθυρο). ΔΕΝ
+        # παρακάμπτουμε κανέναν έλεγχο· απλώς δεν κρύβουμε τον browser.
+        self._headed = headed
         self._proc: subprocess.Popen | None = None
         self._profile: str | None = None
         self._ws = None
@@ -127,16 +138,15 @@ class HeadlessRenderer:
         import websocket  # τοπικό import: η εξάρτηση είναι προαιρετική
 
         self._profile = tempfile.mkdtemp(prefix="tl_headless_")
-        args = [
-            str(self._browser),
-            "--headless=new",
-            "--disable-gpu",
+        args = [str(self._browser)]
+        if not self._headed:
+            args += ["--headless=new", "--disable-gpu",
+                     "--disable-background-networking", "--hide-scrollbars"]
+        args += [
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-extensions",
-            "--disable-background-networking",
             "--mute-audio",
-            "--hide-scrollbars",
             f"--user-data-dir={self._profile}",
             "--remote-debugging-port=0",
             # Απαραίτητο από Chrome/Edge 111+: αλλιώς το DevTools websocket
@@ -144,7 +154,9 @@ class HeadlessRenderer:
             "--remote-allow-origins=*",
             "about:blank",
         ]
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        # Στο headed θέλουμε να φαίνεται το παράθυρο· στο headless κρύβουμε και
+        # την κονσόλα του browser.
+        creationflags = 0 if self._headed else getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self._proc = subprocess.Popen(
             args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=creationflags,
@@ -215,17 +227,26 @@ class HeadlessRenderer:
 
     # ------------------------------------------------------------- render
     def render_pdf(
-        self, url: str, *, min_text: int = MIN_TEXT, timeout: float = 30.0
+        self,
+        url: str,
+        *,
+        min_text: int = MIN_TEXT,
+        timeout: float = 30.0,
+        patient: bool = False,
     ) -> bytes | None:
         """Τυπώνει τη σελίδα σε PDF.
 
         Επιστρέφει τα bytes του PDF, ή ``None`` αν η σελίδα δεν στοιχειοθετήθηκε
         (κενή προβολή — π.χ. πάροχος πίσω από interactive Blazor/Cloudflare).
+
+        ``patient=True`` (για ορατό headed παράθυρο): δεν εγκαταλείπει γρήγορα σε
+        κενή σελίδα — περιμένει όλο το ``timeout``, ώστε να προλάβει ο χρήστης να
+        περάσει τυχόν έλεγχο «είστε άνθρωπος» στο ίδιο το παράθυρο.
         """
         self._call("Page.navigate", url=url)
-        textlen = self._await_render(min_text, timeout)
+        textlen = self._await_render(min_text, timeout, patient=patient)
         if textlen < min_text:
-            log.info("Headless: κενή προβολή (%d χαρ.) για %s", textlen, url)
+            log.info("Render: κενή προβολή (%d χαρ.) για %s", textlen, url)
             return None
         result = self._call(
             "Page.printToPDF",
@@ -236,7 +257,7 @@ class HeadlessRenderer:
         pdf = base64.b64decode(result.get("data", ""))
         return pdf if pdf.startswith(b"%PDF") else None
 
-    def _await_render(self, min_text: int, timeout: float) -> int:
+    def _await_render(self, min_text: int, timeout: float, patient: bool = False) -> int:
         """Περιμένει να σταθεροποιηθεί το κείμενο της σελίδας."""
         deadline = time.time() + timeout
         start = time.time()
@@ -249,8 +270,11 @@ class HeadlessRenderer:
                 if textlen >= min_text and stable >= 3:
                     return textlen
                 # Επίμονα κενό μετά από ~12s -> δεν πρόκειται να στοιχειοθετηθεί
-                # (interactive Blazor/Cloudflare). Μη σπαταλάμε άλλο χρόνο.
-                if textlen < min_text and time.time() - start > 12 and stable >= 4:
+                # (interactive Blazor/Cloudflare). Μη σπαταλάμε άλλο χρόνο — εκτός
+                # αν είμαστε «υπομονετικοί» (ορατό παράθυρο: περιμένουμε τον
+                # χρήστη να περάσει τον έλεγχο).
+                if (not patient and textlen < min_text
+                        and time.time() - start > 12 and stable >= 4):
                     return textlen
             else:
                 stable, last = 0, textlen

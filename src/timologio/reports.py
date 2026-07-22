@@ -302,11 +302,37 @@ def documents_for(
 
     return list(
         conn.execute(
-            f"""SELECT d.*, c.vat AS client_vat FROM documents d
+            f"""SELECT d.*, c.vat AS client_vat, c.label AS client_label
+                FROM documents d
                 JOIN clients c ON c.id = d.client_id
                 WHERE {' AND '.join(clauses)}
                 ORDER BY d.issue_date DESC, d.mark DESC""",
             params,
+        )
+    )
+
+
+def documents_by_marks(
+    conn: sqlite3.Connection, vat: str, marks: Sequence[str]
+) -> list[sqlite3.Row]:
+    """Τα παραστατικά ενός πελάτη με τα δοσμένα MARK — ανεξάρτητα από φίλτρα.
+
+    Χρειάζεται ώστε οι μαζικές ενέργειες (εξαγωγή ZIP, εκτύπωση) να δουλεύουν σε
+    ό,τι έχει επιλέξει ο χρήστης, ακόμη κι αν ένα ενεργό φίλτρο (αναζήτηση,
+    είδος…) κρύβει κάποια από αυτά τη στιγμή της ενέργειας. Περιλαμβάνει
+    `client_label` για τη ροή αποθήκευσης «μόνο online».
+    """
+    marks = list(marks)
+    if not marks:
+        return []
+    placeholders = ",".join("?" * len(marks))
+    return list(
+        conn.execute(
+            f"""SELECT d.*, c.vat AS client_vat, c.label AS client_label
+                FROM documents d JOIN clients c ON c.id = d.client_id
+                WHERE c.vat = ? AND d.mark IN ({placeholders})
+                ORDER BY d.issue_date DESC, d.mark DESC""",
+            [vat, *marks],
         )
     )
 

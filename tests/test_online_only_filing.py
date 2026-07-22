@@ -80,3 +80,80 @@ def test_save_online_only_pdf_rejects_non_pdf(
     row = viewer_only_documents(conn)[0]
     with pytest.raises(ValueError):
         save_online_only_pdf(conn, settings, row, b"<html>not a pdf</html>")
+
+
+def test_download_viewer_only_parallel_saves_all(
+    conn: sqlite3.Connection, tmp_path: Path, monkeypatch
+) -> None:
+    """Η παράλληλη λήψη «μόνο online» αρχειοθετεί όλα τα PDF (mock renderer)."""
+    from pathlib import Path as _P
+
+    import timologio.download.headless as headless
+    from timologio import sync
+
+    # Δεύτερο viewer_only doc ώστε να δουλέψει ο παραλληλισμός.
+    cid = conn.execute("SELECT id FROM clients WHERE vat=?", (CLIENT_VAT,)).fetchone()["id"]
+    upsert_document(
+        conn, cid,
+        Document(mark="400014401148455", invoice_type="1.1", issuer_vat="987654324",
+                 issuer_name="ΑΛΛΟΣ ΠΡΟΜΗΘΕΥΤΗΣ", counter_vat=CLIENT_VAT, series="ΤΔΑ",
+                 aa="2", issue_date="2026-01-03", total_value=50.0,
+                 direction=Direction.INCOMING,
+                 downloading_invoice_url="https://x.gr/fd/two:1",
+                 provider_host="x.gr"),
+    )
+    mark_viewer_only(conn, cid, "400014401148455")
+    conn.commit()
+
+    class FakeRenderer:
+        def __init__(self, *a, **k): pass
+        def render_pdf(self, url, **k): return b"%PDF-1.4 " + b"z" * 300
+        def close(self): pass
+
+    monkeypatch.setattr(headless, "find_browser", lambda: _P("edge.exe"))
+    monkeypatch.setattr(headless, "HeadlessRenderer", FakeRenderer)
+
+    settings = Settings(data_dir=tmp_path / "data")
+    saved, skipped, failed = sync.download_viewer_only(conn, settings)
+    assert (saved, skipped, failed) == (2, 0, 0)
+    assert viewer_only_documents(conn) == []
+    downloaded = conn.execute(
+        "SELECT COUNT(*) c FROM documents WHERE status='downloaded'"
+    ).fetchone()["c"]
+    assert downloaded == 2
+
+
+def test_download_viewer_only_headed_fallback(
+    conn: sqlite3.Connection, tmp_path: Path, monkeypatch
+) -> None:
+    """Όσα μένουν κενά στο headless πέρασμα, τα πιάνει το ορατό headed πέρασμα."""
+    from pathlib import Path as _P
+
+    import timologio.download.headless as headless
+    from timologio import sync
+
+    class FakeRenderer:
+        # Headless -> κενή σελίδα (None)· ορατό headed -> επιτυχία.
+        def __init__(self, *a, headed=False, **k):
+            self._headed = headed
+        def render_pdf(self, url, **k):
+            return (b"%PDF-1.4 " + b"z" * 300) if self._headed else None
+        def close(self):
+            pass
+
+    monkeypatch.setattr(headless, "find_browser", lambda: _P("edge.exe"))
+    monkeypatch.setattr(headless, "HeadlessRenderer", FakeRenderer)
+
+    settings = Settings(data_dir=tmp_path / "data")
+    # Πέρασμα 1 (headless) δεν πιάνει τίποτα· πέρασμα 2 (headed) τα σώζει.
+    saved, skipped, failed = sync.download_viewer_only(conn, settings)
+    assert (saved, skipped, failed) == (1, 0, 0)
+
+    # Χωρίς headed fallback, μένει «μόνο online».
+    conn.execute("UPDATE documents SET status='viewer_only', local_path='' WHERE mark=?",
+                 ("400014401148454",))
+    conn.commit()
+    saved2, skipped2, failed2 = sync.download_viewer_only(
+        conn, settings, headed_fallback=False
+    )
+    assert (saved2, skipped2, failed2) == (0, 1, 0)

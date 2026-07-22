@@ -623,8 +623,16 @@ class DocumentsView(QWidget):
 
     # ---------------------------------------------------------- αρχεία
     def _selected_rows(self) -> list[sqlite3.Row]:
-        rows = getattr(self, "_shown", [])
-        return [r for r in rows if r["mark"] in self._checked]
+        """Τα επιλεγμένα (checked) παραστατικά — ανεξάρτητα από ενεργά φίλτρα.
+
+        Παίρνονται απευθείας από τη βάση κατά MARK, ώστε ένα φίλτρο αναζήτησης/
+        είδους που κρύβει κάποια επιλεγμένα να μην τα αφήνει έξω από την ενέργεια.
+        """
+        if not self._checked or self._conn is None:
+            return []
+        from ..reports import documents_by_marks
+
+        return documents_by_marks(self._conn, self._vat, sorted(self._checked))
 
     def _export_zip(self) -> None:
         rows = self._selected_rows() or getattr(self, "_shown", [])
@@ -721,16 +729,14 @@ class DocumentsView(QWidget):
         # τυπώνει κάποιος, όχι σε κάθε άνοιγμα της λίστας παραστατικών.
         from .printing import print_pdfs
 
-        printed, failed, cancelled = print_pdfs(paths, self)
-        if cancelled and not printed:
-            return
-        note = f"\n\n{failed} PDF δεν τυπώθηκαν (δεν διαβάστηκαν)." if failed else ""
-        if cancelled:
-            note += "\n\nΗ εκτύπωση διακόπηκε — στάλθηκαν όσα προλάβατε."
-        QMessageBox.information(
-            self, "Η εκτύπωση στάλθηκε",
-            f"Στάλθηκαν {printed} παραστατικά στον εκτυπωτή.{note}",
-        )
+        # Ανοίγει προεπισκόπηση· η εκτύπωση γίνεται από εκεί. Δεν δείχνουμε
+        # μήνυμα «στάλθηκε» — το preview είναι η ίδια η επιβεβαίωση.
+        prepared, failed = print_pdfs(paths, self)
+        if failed and not prepared:
+            QMessageBox.warning(
+                self, "Εκτύπωση",
+                "Κανένα από τα επιλεγμένα PDF δεν μπόρεσε να διαβαστεί.",
+            )
 
     def _open_button(self, row: sqlite3.Row) -> QWidget:
         """Κουμπί ανοίγματος — ενεργό μόνο όταν υπάρχει όντως αρχείο."""
@@ -759,20 +765,34 @@ class DocumentsView(QWidget):
             )
             button.clicked.connect(lambda _=False, p=path: self._open(p))
         elif online_url:
-            # Ο πάροχος δεν δίνει PDF, μόνο online προβολή: ανοίγει στον browser.
+            # Μόνο online: καθοδηγούμενη λήψη μέσω του browser, με αυτόματη
+            # αρχειοθέτηση — ίδια ροή/αποθήκευση με το popup «Λήψη μόνο-online».
             button.setIcon(icon("link", CURRENT.accent))
             button.setToolTip(
-                "Προβολή στον πάροχο (δεν υπάρχει PDF για λήψη — μόνο online)"
+                "Λήψη μόνο-online μέσω του browser σας (αποθηκεύεται αυτόματα)"
             )
-            button.clicked.connect(
-                lambda _=False, u=online_url: QDesktopServices.openUrl(QUrl(u))
-            )
+            button.clicked.connect(lambda _=False, r=row: self._download_online_row(r))
         else:
             button.setIcon(icon("cancel", CURRENT.muted))
             button.setEnabled(False)
             button.setToolTip("Δεν υπάρχει αρχείο για αυτό το παραστατικό")
         box.addWidget(button)
         return holder
+
+    def _download_online_row(self, row: sqlite3.Row) -> None:
+        """Λήψη ενός «μόνο online» παραστατικού μέσω του browser (όπως το popup).
+
+        Η γραμμή προέρχεται από `documents_for` που πλέον έχει `client_label` —
+        ό,τι χρειάζεται ο διάλογος για την αρχειοθέτηση (`save_online_only_pdf`).
+        """
+        if self._conn is None:
+            return
+        from .online_only import OnlineOnlyDialog
+
+        dialog = OnlineOnlyDialog(self._conn, self._settings, [row], self)
+        dialog.exec()
+        if dialog.changed:
+            self.reload()
 
     def restyle(self) -> None:
         """Μετά από αλλαγή θέματος: εικονίδια και χρώματα κελιών."""
