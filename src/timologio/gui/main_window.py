@@ -1514,13 +1514,25 @@ class MainWindow(QMainWindow):
             )
             return
 
-        n = self.conn.execute(
-            "SELECT COUNT(*) c FROM documents "
-            "WHERE status='viewer_only' AND downloading_invoice_url <> ''"
-        ).fetchone()["c"]
+        # Οι μόνο-online ενέργειες αφορούν τον επιλεγμένο (ενεργό) πελάτη.
+        vats = self._online_only_vats()
+        if vats:
+            placeholders = ",".join("?" * len(vats))
+            n = self.conn.execute(
+                f"SELECT COUNT(*) c FROM documents d JOIN clients c ON c.id=d.client_id "
+                f"WHERE d.status='viewer_only' AND d.downloading_invoice_url <> '' "
+                f"AND c.vat IN ({placeholders})", vats
+            ).fetchone()["c"]
+        else:
+            n = self.conn.execute(
+                "SELECT COUNT(*) c FROM documents "
+                "WHERE status='viewer_only' AND downloading_invoice_url <> ''"
+            ).fetchone()["c"]
         if not n:
             QMessageBox.information(
                 self, "Λήψη μόνο-online",
+                "Δεν υπάρχουν παραστατικά «μόνο online» για τον επιλεγμένο πελάτη."
+                if vats else
                 "Δεν υπάρχουν παραστατικά «μόνο online» προς λήψη.\n\n"
                 "Αυτά εμφανίζονται όταν ένας πάροχος δείχνει το παραστατικό μόνο "
                 "στη σελίδα του, χωρίς αρχείο PDF.",
@@ -1554,7 +1566,7 @@ class MainWindow(QMainWindow):
         box.exec()
         clicked = box.clickedButton()
         if clicked == btn_browser:
-            self._open_online_only_browser()
+            self._open_online_only_browser(vats)
             return
         if clicked != btn_auto:
             return
@@ -1583,7 +1595,7 @@ class MainWindow(QMainWindow):
         self._hl_dialog.setValue(0)
 
         self._hl_thread = QThread(self)
-        self._hl_worker = HeadlessWorker(None)
+        self._hl_worker = HeadlessWorker(vats)
         self._hl_worker.moveToThread(self._hl_thread)
         self._hl_thread.started.connect(self._hl_worker.run)
         self._hl_worker.message.connect(self._on_headless_message)
@@ -1592,7 +1604,18 @@ class MainWindow(QMainWindow):
         self._hl_dialog.canceled.connect(self._hl_worker.cancel)
         self._hl_thread.start()
 
-    def _open_online_only_browser(self) -> None:
+    def _online_only_vats(self) -> list[str] | None:
+        """Οι μόνο-online ενέργειες αφορούν τον επιλεγμένο (ενεργό) πελάτη.
+
+        Επιστρέφει τα ΑΦΜ των επιλεγμένων· αν δεν υπάρχει επιλογή, τον ενεργό
+        (καρφιτσωμένο). ``None`` σημαίνει «όλοι» (καμία επιλογή/ενεργός).
+        """
+        vats = self._selected_vats(only_ready=False)
+        if not vats and self._pinned_vat:
+            vats = [self._pinned_vat]
+        return vats or None
+
+    def _open_online_only_browser(self, vats: list[str] | None = None) -> None:
         """Καθοδηγούμενη λήψη μέσω του browser του χρήστη + αυτόματη αρχειοθέτηση.
 
         Ο χρήστης περνά ο ίδιος τυχόν έλεγχο «είστε άνθρωπος» στον πάροχο· εμείς
@@ -1600,7 +1623,7 @@ class MainWindow(QMainWindow):
         """
         from ..gui.online_only import OnlineOnlyDialog
 
-        rows = repo.viewer_only_documents(self.conn)
+        rows = repo.viewer_only_documents(self.conn, vats)
         if not rows:
             return
         dialog = OnlineOnlyDialog(self.conn, self.settings, rows, self)

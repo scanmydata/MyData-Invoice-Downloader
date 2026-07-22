@@ -570,13 +570,14 @@ def download_viewer_only(
     cancelled = bool(should_cancel and should_cancel())
     if headed_fallback and remaining and not cancelled:
         progress(
-            f"  ▶ {len(remaining)} παραστατικά ανοίγουν σε ΟΡΑΤΟ browser — "
-            "λύστε τυχόν έλεγχο «είστε άνθρωπος» στο παράθυρο και θα αποθηκευτούν."
+            f"  ▶ {len(remaining)} παραστατικά ανοίγουν σε ΟΡΑΤΟ browser, ένα-ένα "
+            "— μόλις εμφανιστεί το καθένα αποθηκεύεται και ανοίγει το επόμενο."
         )
+        # Σειριακά (ένα ορατό παράθυρο): ανοίγει το επόμενο μόλις ολοκληρωθεί το
+        # προηγούμενο — πιο ξεκάθαρο από πολλά παράθυρα μαζί.
         s2, f2, remaining = _render_viewer_batch(
             conn, settings, remaining, headed=True, patient=True, timeout=150.0,
-            workers=max(1, min(5, cpu, len(remaining))),
-            progress=progress, should_cancel=should_cancel,
+            workers=1, progress=progress, should_cancel=should_cancel,
         )
         saved += s2
         failed += f2

@@ -42,7 +42,7 @@ ROLES = ("standalone", "server", "terminal")
 #: Η έκδοση που δηλώνει το κάθε instance στους υπόλοιπους του δικτύου. Κρατιέται
 #: εδώ ώστε να υπάρχει μία πηγή: το pyproject δεν διαβάζεται μέσα από το bundle
 #: του PyInstaller.
-APP_VERSION = "0.2.10"
+APP_VERSION = "0.2.11"
 
 ROLE_LABELS_EL = {
     "standalone": "Αυτόνομος υπολογιστής",

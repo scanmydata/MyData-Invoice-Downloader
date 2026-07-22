@@ -131,6 +131,7 @@ class HeadlessRenderer:
         self._profile: str | None = None
         self._ws = None
         self._msg_id = 0
+        self._port = 0
         self._launch(launch_timeout)
 
     # ------------------------------------------------------------- εκκίνηση
@@ -138,15 +139,20 @@ class HeadlessRenderer:
         import websocket  # τοπικό import: η εξάρτηση είναι προαιρετική
 
         self._profile = tempfile.mkdtemp(prefix="tl_headless_")
+        # Το headed διαφέρει από το headless ΜΟΝΟ στο ότι είναι ορατό: ίδια
+        # σταθερά flags (και --disable-gpu, που κρατά τον renderer σταθερό — ένα
+        # crash του GPU process έριχνε το DevTools websocket με «σφάλμα browser»).
         args = [str(self._browser)]
         if not self._headed:
-            args += ["--headless=new", "--disable-gpu",
-                     "--disable-background-networking", "--hide-scrollbars"]
+            args += ["--headless=new"]
         args += [
+            "--disable-gpu",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-extensions",
+            "--disable-background-networking",
             "--mute-audio",
+            "--hide-scrollbars",
             f"--user-data-dir={self._profile}",
             "--remote-debugging-port=0",
             # Απαραίτητο από Chrome/Edge 111+: αλλιώς το DevTools websocket
@@ -161,8 +167,8 @@ class HeadlessRenderer:
             args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=creationflags,
         )
-        port = self._read_port(timeout)
-        page = self._first_page_target(port, timeout)
+        self._port = self._read_port(timeout)
+        page = self._first_page_target(self._port, timeout)
         self._ws = websocket.create_connection(
             page["webSocketDebuggerUrl"], max_size=None, timeout=60
         )
@@ -202,6 +208,21 @@ class HeadlessRenderer:
 
     # --------------------------------------------------------------- CDP
     def _call(self, method: str, **params) -> dict:
+        import websocket
+
+        try:
+            return self._send_recv(method, params)
+        except (OSError, websocket.WebSocketException) as exc:
+            # Το page target μπορεί να αντικαταστάθηκε (cross-process navigation,
+            # π.χ. redirect Cloudflare/DocViewer) και το websocket να έκλεισε
+            # (WinError 10053 «connection aborted»). Ξανασυνδεόμαστε στο τρέχον
+            # target και ξαναδοκιμάζουμε μία φορά, αντί να σκάσουμε με «σφάλμα
+            # browser». (Το HeadlessError των CDP σφαλμάτων ΔΕΝ πιάνεται εδώ.)
+            log.info("CDP websocket επανασύνδεση μετά από: %s", exc)
+            self._reconnect()
+            return self._send_recv(method, params)
+
+    def _send_recv(self, method: str, params: dict) -> dict:
         assert self._ws is not None
         self._msg_id += 1
         mid = self._msg_id
@@ -213,6 +234,20 @@ class HeadlessRenderer:
                     raise HeadlessError(str(msg["error"]))
                 return msg.get("result", {})
             # αγνοούμε τα asynchronous events (Page.*, Network.* κ.λπ.)
+
+    def _reconnect(self) -> None:
+        """Ξανασυνδέεται στο τρέχον page target μετά από πτώση του websocket."""
+        import websocket
+
+        if self._ws is not None:
+            try:
+                self._ws.close()
+            except Exception:  # noqa: BLE001
+                pass
+        page = self._first_page_target(self._port, 10.0)
+        self._ws = websocket.create_connection(
+            page["webSocketDebuggerUrl"], max_size=None, timeout=60
+        )
 
     def _text_length(self) -> int:
         try:
