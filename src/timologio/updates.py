@@ -122,15 +122,34 @@ def build_updater_script(
     def q(text: str) -> str:  # single-quoted PowerShell literal
         return "'" + str(text).replace("'", "''") + "'"
 
+    def esc(text: str) -> str:  # για χρήση μέσα σε ήδη single-quoted literal
+        return str(text).replace("'", "''")
+
     tray_flag = "/TRAY=1" if tray else "/TRAY=0"
+    # Ο installer γράφει log δίπλα στο setup, ώστε μια αποτυχία να είναι ορατή.
+    log_path = setup.with_name("timologio_update_inno.log")
+    proc_name = app_exe.stem
     args = (
         f"'/SILENT','/SUPPRESSMSGBOXES','/NORESTART',"
-        f"'/DATADIR={str(data_dir).replace(chr(39), chr(39) * 2)}',"
+        f"'/LOG={esc(log_path)}',"
+        f"'/DATADIR={esc(data_dir)}',"
         f"'/ROLE={role}','{tray_flag}'"
     )
     return (
         "$ErrorActionPreference='SilentlyContinue'\n"
+        # Περίμενε πρώτα τη συγκεκριμένη διεργασία που ζήτησε την ενημέρωση…
         f"Wait-Process -Id {int(pid)} -Timeout 60\n"
+        # …και μετά κάθε τυχόν άλλη ανοιχτή instance (π.χ. server + τερματικό στο
+        # ίδιο μηχάνημα), ώστε να μη μείνει κανείς να κλειδώνει τα αρχεία.
+        "$deadline=(Get-Date).AddSeconds(30)\n"
+        f"while ((Get-Process -Name {q(proc_name)} -ErrorAction SilentlyContinue) "
+        f"-and (Get-Date) -lt $deadline) {{ Start-Sleep -Milliseconds 500 }}\n"
+        # ΚΡΙΣΙΜΟ: ο πυρήνας του Windows απελευθερώνει τα mapped DLL (Qt κ.λπ.) με
+        # μικρή καθυστέρηση ΜΕΤΑ τον τερματισμό. Χωρίς αυτή την αναμονή, ο
+        # installer έβρισκε κλειδωμένα αρχεία, δεν τα αντικαθιστούσε (σιωπηλά, λόγω
+        # /SUPPRESSMSGBOXES) και η αναβάθμιση «δεν έπιανε» — η εφαρμογή ξανάνοιγε
+        # στην παλιά έκδοση και ξαναπρότεινε ενημέρωση (ατέρμονος βρόχος).
+        "Start-Sleep -Seconds 3\n"
         f"Start-Process -Wait -FilePath {q(setup)} -ArgumentList @({args})\n"
         f"Start-Process -FilePath {q(app_exe)}\n"
     )

@@ -179,6 +179,14 @@ def test_updater_script_waits_installs_relaunches():
     assert "/TRAY=0" in script
     assert "Παραστατικά myDATA" in script
     assert "/SILENT" in script
+    # Αναμονή για ξεκλείδωμα αρχείων πριν την εγκατάσταση: πρώτα κάθε instance
+    # με το όνομα, μετά καθυστέρηση για να απελευθερώσει ο πυρήνας τα DLL —
+    # αλλιώς η αναβάθμιση δεν πιάνει και η εφαρμογή κολλά σε βρόχο ενημέρωσης.
+    assert "Get-Process -Name 'App'" in script
+    assert script.index("Get-Process -Name 'App'") < script.index("Start-Sleep -Seconds")
+    assert script.index("Start-Sleep -Seconds") < script.index("setup.exe")
+    # Ο installer γράφει log ώστε μια αποτυχία να είναι ορατή.
+    assert "/LOG=" in script
 
 
 def test_updater_script_escapes_quotes_in_paths():
