@@ -128,8 +128,9 @@ class SideMenu(QWidget):
         layout.addWidget(self._separator("ΔΕΔΟΜΕΝΑ"))
         for name, text, tip in [
             ("folder", "Φάκελος αρχείων", "Άνοιγμα του φακέλου με τα PDF"),
-            ("csv", "Εξαγωγή CSV",
-             "Αναλυτική κατάσταση σε CSV — επιλέξτε πρώτα πελάτη/πελάτες"),
+            ("csv", "Εξαγωγή Excel/CSV",
+             "Αναλυτική κατάσταση σε Excel (ταξινομήσιμος πίνακας) ή CSV — "
+             "επιλέξτε πρώτα πελάτη/πελάτες"),
             ("online_pdf", "Λήψη μόνο-online",
              "Κατεβάζει με headless browser (Edge/Chrome) όσα παραστατικά ο "
              "πάροχος δείχνει μόνο online"),

@@ -27,6 +27,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -42,6 +43,10 @@ class HeadlessError(Exception):
 
 class BrowserNotFound(HeadlessError):
     """Δεν βρέθηκε Edge ή Chrome στο σύστημα."""
+
+
+class HeadlessCancelled(HeadlessError):
+    """Η απόδοση διακόπηκε από τον χρήστη (ακύρωση) — όχι σφάλμα."""
 
 
 def _registry_app_path(exe: str) -> str | None:
@@ -115,8 +120,10 @@ class HeadlessRenderer:
         *,
         launch_timeout: float = 20.0,
         headed: bool = False,
+        should_cancel: Callable[[], bool] | None = None,
     ):
         self._browser = browser or find_browser()
+        self._should_cancel = should_cancel
         if self._browser is None:
             raise BrowserNotFound(
                 "Δεν βρέθηκε Microsoft Edge ή Google Chrome. Εγκαταστήστε έναν "
@@ -161,8 +168,11 @@ class HeadlessRenderer:
             "about:blank",
         ]
         # Στο headed θέλουμε να φαίνεται το παράθυρο· στο headless κρύβουμε και
-        # την κονσόλα του browser.
+        # την κονσόλα του browser. Σε ΚΑΘΕ περίπτωση τρέχουμε τον browser σε
+        # χαμηλότερη προτεραιότητα (BELOW_NORMAL): ένας renderer που τρώει CPU
+        # δεν πρέπει να «παγώνει» ολόκληρο το μηχάνημα του λογιστή.
         creationflags = 0 if self._headed else getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        creationflags |= getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
         self._proc = subprocess.Popen(
             args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=creationflags,
@@ -179,6 +189,8 @@ class HeadlessRenderer:
         marker = Path(self._profile) / "DevToolsActivePort"
         deadline = time.time() + timeout
         while time.time() < deadline:
+            if self._should_cancel and self._should_cancel():
+                raise HeadlessCancelled()
             if self._proc and self._proc.poll() is not None:
                 raise HeadlessError("Ο browser τερμάτισε πρόωρα.")
             if marker.exists():
@@ -193,6 +205,8 @@ class HeadlessRenderer:
         deadline = time.time() + timeout
         last_err: Exception | None = None
         while time.time() < deadline:
+            if self._should_cancel and self._should_cancel():
+                raise HeadlessCancelled()
             try:
                 with urllib.request.urlopen(
                     f"http://127.0.0.1:{port}/json", timeout=5
@@ -268,6 +282,7 @@ class HeadlessRenderer:
         min_text: int = MIN_TEXT,
         timeout: float = 30.0,
         patient: bool = False,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> bytes | None:
         """Τυπώνει τη σελίδα σε PDF.
 
@@ -277,9 +292,13 @@ class HeadlessRenderer:
         ``patient=True`` (για ορατό headed παράθυρο): δεν εγκαταλείπει γρήγορα σε
         κενή σελίδα — περιμένει όλο το ``timeout``, ώστε να προλάβει ο χρήστης να
         περάσει τυχόν έλεγχο «είστε άνθρωπος» στο ίδιο το παράθυρο.
+
+        ``should_cancel``: αν επιστρέψει True κατά την αναμονή, η απόδοση κόβεται
+        αμέσως με ``HeadlessCancelled`` (η ακύρωση γίνεται αισθητή σε <0.5s).
         """
         self._call("Page.navigate", url=url)
-        textlen = self._await_render(min_text, timeout, patient=patient)
+        textlen = self._await_render(min_text, timeout, patient=patient,
+                                     should_cancel=should_cancel)
         if textlen < min_text:
             log.info("Render: κενή προβολή (%d χαρ.) για %s", textlen, url)
             return None
@@ -292,12 +311,17 @@ class HeadlessRenderer:
         pdf = base64.b64decode(result.get("data", ""))
         return pdf if pdf.startswith(b"%PDF") else None
 
-    def _await_render(self, min_text: int, timeout: float, patient: bool = False) -> int:
+    def _await_render(
+        self, min_text: int, timeout: float, patient: bool = False,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> int:
         """Περιμένει να σταθεροποιηθεί το κείμενο της σελίδας."""
         deadline = time.time() + timeout
         start = time.time()
         last, stable, textlen = -1, 0, 0
         while time.time() < deadline:
+            if should_cancel and should_cancel():
+                raise HeadlessCancelled()
             textlen = self._text_length()
             if textlen == last:
                 stable += 1
@@ -313,7 +337,11 @@ class HeadlessRenderer:
                     return textlen
             else:
                 stable, last = 0, textlen
-            time.sleep(0.5)
+            # Μικρά βήματα ύπνου ώστε η ακύρωση να γίνεται αισθητή γρήγορα.
+            for _ in range(5):
+                if should_cancel and should_cancel():
+                    raise HeadlessCancelled()
+                time.sleep(0.1)
         return textlen
 
     # -------------------------------------------------------------- cleanup
@@ -325,18 +353,39 @@ class HeadlessRenderer:
                 pass
             self._ws = None
         if self._proc is not None:
-            try:
-                self._proc.terminate()
-                self._proc.wait(timeout=5)
-            except Exception:  # noqa: BLE001
-                try:
-                    self._proc.kill()
-                except Exception:  # noqa: BLE001
-                    pass
+            self._kill_tree(self._proc)
             self._proc = None
         if self._profile and os.path.isdir(self._profile):
             shutil.rmtree(self._profile, ignore_errors=True)
             self._profile = None
+
+    @staticmethod
+    def _kill_tree(proc: subprocess.Popen) -> None:
+        """Τερματίζει ΟΛΟΚΛΗΡΟ το δέντρο διεργασιών του browser.
+
+        ΚΡΙΣΙΜΟ για τους πόρους: ένας Chrome/Edge δεν είναι μία διεργασία αλλά
+        δέντρο (browser + renderer + gpu + utility). Το ``terminate()`` σκοτώνει
+        μόνο τη ρίζα· τα παιδιά μένουν ορφανά, τρώνε μνήμη/CPU και «παγώνουν» το
+        μηχάνημα. Στα Windows το ``taskkill /T /F`` καθαρίζει όλο το δέντρο.
+        """
+        if os.name == "nt" and proc.pid:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    timeout=10,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
 
     def __enter__(self) -> "HeadlessRenderer":
         return self

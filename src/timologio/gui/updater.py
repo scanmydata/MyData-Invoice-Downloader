@@ -232,13 +232,17 @@ class Updater(QObject):
 
     def _launch_installer(self, setup: Path) -> None:
         window = self._window
+        app_exe = Path(sys.executable)
         script = updates.build_updater_script(
             pid=os.getpid(),
             setup=setup,
-            app_exe=Path(sys.executable),
+            app_exe=app_exe,
             data_dir=window.settings.data_dir,
             role=window._role,
             tray=load_start_minimized(),
+            # Ο φάκελος όπου τρέχει ΤΩΡΑ η εφαρμογή — εκεί ακριβώς εγκαθιστούμε τη
+            # νέα έκδοση, ώστε να μη «χαθεί» σε άλλον φάκελο (βλ. build_updater_script).
+            install_dir=app_exe.parent,
         )
         script_path = Path(tempfile.gettempdir()) / "timologio_update.ps1"
         # UTF-8 με BOM: το Windows PowerShell 5.1 διαβάζει αλλιώς ANSI και θα

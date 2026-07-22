@@ -63,7 +63,7 @@ from .. import crypto as crypto_mod
 from ..crypto import Crypto
 from ..db import init_db
 from ..download.storage import find_client_folder
-from ..reports import export_documents
+from ..reports import export_documents, export_documents_xlsx
 from .analysis_panel import AnalysisPanel
 from .busy import BusyOverlay
 from .client_dialog import ClientDialog
@@ -137,6 +137,10 @@ class MainWindow(QMainWindow):
         self._prefs = QSettings("scanmydata", "TimologioDownloader")
         self._thread: QThread | None = None
         self._worker: SyncWorker | None = None
+        # Ξεχωριστό thread για τη λήψη «μόνο online» (headless browser).
+        self._hl_thread: QThread | None = None
+        self._hl_worker: HeadlessWorker | None = None
+        self._hl_dialog: QProgressDialog | None = None
         self._checked: set[str] = set()
         self._pinned_vat: str | None = None
         self._last_totals: tuple[int, int, int, int, int] | None = None
@@ -1507,7 +1511,14 @@ class MainWindow(QMainWindow):
     def on_download_viewer_only(self) -> None:
         """Κατεβάζει με headless browser όσα παραστατικά ο πάροχος δείχνει
         μόνο online (SPA προβολές που δεν δίνουν PDF στο downloadingInvoiceUrl)."""
-        if self._thread is not None or getattr(self, "_hl_thread", None) is not None:
+        # Αυτο-επούλωση: αν έμεινε αναφορά σε παλιό thread που έχει ήδη τελειώσει
+        # (π.χ. μετά από ακύρωση), την καθαρίζουμε ώστε η επανεκκίνηση να δουλέψει
+        # αντί να κολλήσει σε ψεύτικο «εκτελείται ήδη».
+        hl = getattr(self, "_hl_thread", None)
+        if hl is not None and not hl.isRunning():
+            self._teardown_headless()
+            hl = None
+        if self._thread is not None or hl is not None:
             QMessageBox.information(
                 self, "Εκτελείται ήδη",
                 "Περιμένετε να ολοκληρωθεί η τρέχουσα εργασία.",
@@ -1601,8 +1612,15 @@ class MainWindow(QMainWindow):
         self._hl_worker.message.connect(self._on_headless_message)
         self._hl_worker.finished.connect(self._on_headless_finished)
         self._hl_worker.failed.connect(self._on_headless_failed)
-        self._hl_dialog.canceled.connect(self._hl_worker.cancel)
+        self._hl_dialog.canceled.connect(self._on_headless_cancel)
         self._hl_thread.start()
+
+    def _on_headless_cancel(self) -> None:
+        """Ακύρωση της μόνο-online λήψης — γίνεται αισθητή σε <1s."""
+        if getattr(self, "_hl_worker", None) is not None:
+            self._hl_worker.cancel()
+        if getattr(self, "_hl_dialog", None) is not None:
+            self._hl_dialog.setLabelText("Ακύρωση… κλείσιμο browser.")
 
     def _online_only_vats(self) -> list[str] | None:
         """Οι μόνο-online ενέργειες αφορούν τον επιλεγμένο (ενεργό) πελάτη.
@@ -1932,31 +1950,47 @@ class MainWindow(QMainWindow):
         self._log(f"Έγινε επαναφορά από {newest.name}")
 
     def on_export(self) -> None:
-        """Απαιτεί ρητά επιλεγμένο πελάτη: μια σιωπηλή εξαγωγή «όλων» δεν είναι
-        ό,τι περιμένει κανείς όταν κοιτάει έναν συγκεκριμένο πελάτη."""
+        """Εξαγωγή σε Excel (.xlsx, με ταξινομήσιμο πίνακα) ή CSV.
+
+        Απαιτεί ρητά επιλεγμένο πελάτη: μια σιωπηλή εξαγωγή «όλων» δεν είναι ό,τι
+        περιμένει κανείς όταν κοιτάει έναν συγκεκριμένο πελάτη."""
         vats = self._selected_vats(only_ready=False)
         if not vats:
             QMessageBox.information(
-                self, "Εξαγωγή CSV",
+                self, "Εξαγωγή",
                 "Επιλέξτε πρώτα έναν ή περισσότερους πελάτες από τη λίστα.\n\n"
                 "Κάντε κλικ σε γραμμή (ή Ctrl/Shift+κλικ για πολλούς) και "
-                "ξαναπατήστε «Εξαγωγή CSV».",
+                "ξαναπατήστε «Εξαγωγή».",
             )
             self._show_page("clients")
             return
 
         who = self._label_for(vats[0]) if len(vats) == 1 else f"{len(vats)} πελάτες"
-        default = self.settings.data_dir / (
-            f"παραστατικά {vats[0]} {_safe_name(self._label_for(vats[0]))}.csv".strip()
-            if len(vats) == 1 else "παραστατικά.csv"
+        base = (
+            f"παραστατικά {vats[0]} {_safe_name(self._label_for(vats[0]))}".strip()
+            if len(vats) == 1 else "παραστατικά"
         )
-        path, _ = QFileDialog.getSaveFileName(
-            self, f"Εξαγωγή CSV — {who}", str(default), "CSV (*.csv)"
+        # Προεπιλογή το Excel — το ζήτησε ρητά ο χρήστης (ταξινόμηση εξωτερικά).
+        default = self.settings.data_dir / f"{base}.xlsx"
+        path, selected = QFileDialog.getSaveFileName(
+            self, f"Εξαγωγή — {who}", str(default),
+            "Excel (*.xlsx);;CSV (*.csv)",
         )
         if not path:
             return
+
+        # Ο τύπος καθορίζεται από την κατάληξη· αν λείπει, από το επιλεγμένο φίλτρο.
+        is_excel = path.lower().endswith(".xlsx") or (
+            not path.lower().endswith(".csv") and "xlsx" in (selected or "")
+        )
+        suffix = ".xlsx" if is_excel else ".csv"
+        if not path.lower().endswith(suffix):
+            path += suffix
+        kind = "Excel" if is_excel else "CSV"
+        writer = export_documents_xlsx if is_excel else export_documents
+
         total = 0
-        with self._busy(f"Εξαγωγή CSV — {who}…"):
+        with self._busy(f"Εξαγωγή {kind} — {who}…"):
             for vat in vats:
                 target = Path(path)
                 if len(vats) > 1:
@@ -1965,8 +1999,8 @@ class MainWindow(QMainWindow):
                         f"{target.stem} {vat} {_safe_name(self._label_for(vat))}"
                         f"{target.suffix}".replace("  ", " ")
                     )
-                total += export_documents(self.conn, target, vat)
-        self._log(f"Εξήχθησαν {total} παραστατικά για {who}")
+                total += writer(self.conn, target, vat)
+        self._log(f"Εξήχθησαν {total} παραστατικά για {who} ({kind})")
         QMessageBox.information(
             self, "Η εξαγωγή ολοκληρώθηκε",
             f"{total} παραστατικά για {who}\n\n{Path(path).parent}",

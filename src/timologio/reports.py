@@ -15,7 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import coverage
-from .models import CLASSIFICATION_LABELS_EL, Classification
+from .models import (
+    CLASSIFICATION_LABELS_EL,
+    STATUS_LABELS_EL,
+    Classification,
+    DocStatus,
+)
 
 
 #: Έσοδα = ό,τι εξέδωσε ο ίδιος ο πελάτης.
@@ -372,6 +377,98 @@ def export_missing_keys(conn: sqlite3.Connection, path: Path) -> int:
                 else "Όνομα χρήστη και κλειδί API",
                 row["source_file"],
             ])
+    return len(rows)
+
+
+#: Στήλες της αναλυτικής κατάστασης — κοινές για CSV και Excel.
+_DOC_HEADERS = [
+    "ΑΦΜ Πελάτη", "Πελάτης", "MARK", "Κατεύθυνση", "Τύπος", "Ημ. Έκδοσης",
+    "Σειρά", "ΑΑ", "ΑΦΜ Εκδότη", "Εκδότης", "Καθαρή Αξία", "ΦΠΑ",
+    "Σύνολο", "Χαρακτηρισμός", "Κατάσταση", "Αρχείο",
+]
+#: Δείκτες (0-based) των αριθμητικών στηλών — γράφονται ως πραγματικοί αριθμοί
+#: στο Excel, ώστε να ταξινομούνται/αθροίζονται σωστά.
+_DOC_NUMERIC_COLS = (10, 11, 12)
+
+_DIRECTION_EL = {"incoming": "Έσοδο", "outgoing": "Έξοδο", "both": "Έσοδο/Έξοδο"}
+
+
+def _doc_row_values(r: sqlite3.Row) -> list:
+    """Μία γραμμή δεδομένων (τα ποσά ως float για το Excel)."""
+    cls = Classification(r["classification"] or "unknown")
+    try:
+        status_el = STATUS_LABELS_EL[DocStatus(r["status"])]
+    except (ValueError, KeyError):
+        status_el = r["status"]
+    return [
+        r["client_vat"], r["client_label"], r["mark"],
+        _DIRECTION_EL.get(r["direction"], r["direction"]),
+        r["invoice_type"], r["issue_date"], r["series"], r["aa"],
+        r["issuer_vat"], r["issuer_name"],
+        float(r["net_value"] or 0), float(r["vat_amount"] or 0),
+        float(r["total_value"] or 0),
+        CLASSIFICATION_LABELS_EL[cls], status_el,
+        r["local_path"] or r["xml_path"],
+    ]
+
+
+def _documents_rows(conn: sqlite3.Connection, vat: str | None) -> list[sqlite3.Row]:
+    sql = """SELECT c.vat client_vat, c.label client_label, d.*
+             FROM documents d JOIN clients c ON c.id = d.client_id"""
+    params: tuple = ()
+    if vat:
+        sql += " WHERE c.vat = ?"
+        params = (vat,)
+    sql += " ORDER BY c.vat, d.issue_date, d.mark"
+    return list(conn.execute(sql, params))
+
+
+def export_documents_xlsx(
+    conn: sqlite3.Connection, path: Path, vat: str | None = None
+) -> int:
+    """Αναλυτική κατάσταση σε Excel (.xlsx), ως **πραγματικός πίνακας**.
+
+    Ο πίνακας έχει autofilter και banded γραμμές, ώστε ο χρήστης να ταξινομεί και
+    να φιλτράρει εξωτερικά με ένα κλικ. Τα ποσά είναι αριθμοί (όχι κείμενο), οπότε
+    αθροίζονται και ταξινομούνται σωστά. Η πρώτη γραμμή «παγώνει».
+    """
+    from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+
+    rows = _documents_rows(conn, vat)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Παραστατικά"
+    ws.append(_DOC_HEADERS)
+    for r in rows:
+        ws.append(_doc_row_values(r))
+
+    # Μορφή αριθμού για τις στήλες αξίας (χιλιάδες + 2 δεκαδικά).
+    for col in _DOC_NUMERIC_COLS:
+        letter = get_column_letter(col + 1)
+        for cell in ws[letter][1:]:  # μετά την επικεφαλίδα
+            cell.number_format = "#,##0.00"
+
+    # Πραγματικός πίνακας Excel: autofilter + ταξινόμηση + banded γραμμές.
+    last_col = get_column_letter(len(_DOC_HEADERS))
+    last_row = max(len(rows) + 1, 2)  # τουλάχιστον 1 γραμμή δεδομένων για έγκυρο table
+    table = Table(displayName="Παραστατικά", ref=f"A1:{last_col}{last_row}")
+    table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium2", showRowStripes=True, showColumnStripes=False,
+        showFirstColumn=False, showLastColumn=False,
+    )
+    ws.add_table(table)
+
+    # Λογικά πλάτη στηλών ώστε να διαβάζονται χωρίς χειροκίνητο τέντωμα.
+    widths = [12, 30, 18, 12, 10, 12, 8, 8, 12, 30, 13, 11, 13, 16, 20, 40]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+    wb.save(path)
     return len(rows)
 
 

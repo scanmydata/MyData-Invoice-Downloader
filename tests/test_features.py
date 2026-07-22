@@ -170,6 +170,7 @@ def test_updater_script_waits_installs_relaunches():
         data_dir=Path(r"C:\Users\x\Documents\Παραστατικά myDATA"),
         role="terminal",
         tray=False,
+        install_dir=Path(r"C:\Programs\App"),
     )
     # Σειρά: περίμενε το κλείσιμο -> εγκατέστησε -> ξαναάνοιξε.
     assert script.index("Wait-Process -Id 4321") < script.index("setup.exe")
@@ -179,14 +180,28 @@ def test_updater_script_waits_installs_relaunches():
     assert "/TRAY=0" in script
     assert "Παραστατικά myDATA" in script
     assert "/SILENT" in script
+    # ΚΡΙΣΙΜΟ: ρητό /DIR στον φάκελο που τρέχει η εφαρμογή — αλλιώς η νέα έκδοση
+    # μπορεί να εγκατασταθεί αλλού και το relaunch να ανοίξει την παλιά.
+    assert r"/DIR=C:\Programs\App" in script
     # Αναμονή για ξεκλείδωμα αρχείων πριν την εγκατάσταση: πρώτα κάθε instance
-    # με το όνομα, μετά καθυστέρηση για να απελευθερώσει ο πυρήνας τα DLL —
-    # αλλιώς η αναβάθμιση δεν πιάνει και η εφαρμογή κολλά σε βρόχο ενημέρωσης.
+    # με το όνομα, μετά force-kill ό,τι επιμένει, μετά καθυστέρηση για να
+    # απελευθερώσει ο πυρήνας τα DLL — αλλιώς η αναβάθμιση δεν πιάνει.
     assert "Get-Process -Name 'App'" in script
+    assert "Stop-Process -Name 'App' -Force" in script
     assert script.index("Get-Process -Name 'App'") < script.index("Start-Sleep -Seconds")
     assert script.index("Start-Sleep -Seconds") < script.index("setup.exe")
     # Ο installer γράφει log ώστε μια αποτυχία να είναι ορατή.
     assert "/LOG=" in script
+
+
+def test_updater_script_omits_dir_when_not_given():
+    from timologio.updates import build_updater_script
+
+    script = build_updater_script(
+        pid=1, setup=Path(r"C:\s.exe"), app_exe=Path(r"C:\a\App.exe"),
+        data_dir=Path(r"C:\d"), role="standalone", tray=True,
+    )
+    assert "/DIR=" not in script
 
 
 def test_updater_script_escapes_quotes_in_paths():
@@ -198,3 +213,40 @@ def test_updater_script_escapes_quotes_in_paths():
     )
     # Το μονό εισαγωγικό διπλασιάζεται για ασφαλές PowerShell literal.
     assert "C:\\O''Brien\\setup.exe" in script
+
+
+# --- ακύρωση ---------------------------------------------------------------
+
+
+def test_mydata_fetch_raises_on_cancel():
+    """Η ακύρωση πιάνεται ανάμεσα στις σελίδες, πριν από κάθε δικτυακή κλήση."""
+    from pathlib import Path
+
+    import pytest
+
+    from timologio.config import Settings
+    from timologio.models import Direction, OperationCancelled
+    from timologio.mydata.client import MydataClient
+
+    client = MydataClient("user", "k" * 32, Settings(data_dir=Path("x")))
+    called = {"n": 0}
+    client._get = lambda *a, **k: called.__setitem__("n", called["n"] + 1) or b""
+    with pytest.raises(OperationCancelled):
+        client.fetch(Direction.INCOMING, should_cancel=lambda: True)
+    # Ακυρώθηκε ΠΡΙΝ ακουμπήσει το δίκτυο.
+    assert called["n"] == 0
+
+
+def test_mydata_fetch_e3_raises_on_cancel():
+    from pathlib import Path
+
+    import pytest
+
+    from timologio.config import Settings
+    from timologio.models import OperationCancelled
+    from timologio.mydata.client import MydataClient
+
+    client = MydataClient("user", "k" * 32, Settings(data_dir=Path("x")))
+    client._get = lambda *a, **k: b""
+    with pytest.raises(OperationCancelled):
+        client.fetch_e3(should_cancel=lambda: True)

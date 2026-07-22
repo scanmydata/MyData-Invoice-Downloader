@@ -31,7 +31,7 @@ from .download import (
     write_atomic,
 )
 from .download.storage import long_path
-from .models import Client, Direction, Document, RunStats
+from .models import Client, Direction, Document, OperationCancelled, RunStats
 from .mydata import AuthError, MissingKeyError, MydataClient, MydataError
 from .vies import ViesClient
 
@@ -59,6 +59,7 @@ def discover(
     incremental: bool = True,
     directions: Sequence[Direction] = BOTH_WAYS,
     progress: ProgressFn = _noop,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> int:
     """Ανακαλύπτει παραστατικά και τα γράφει στη βάση. Επιστρέφει πλήθος."""
     assert client.id is not None
@@ -70,6 +71,8 @@ def discover(
 
     with MydataClient(client.mydata_user, client.mydata_key, settings) as api:
         for direction in directions:
+            if should_cancel and should_cancel():
+                break
             cursor = "0"
             if incremental and coverage.can_use_cursor(
                 conn, client.id, direction, date_from, date_to
@@ -88,7 +91,8 @@ def discover(
                 )
 
             docs = api.fetch(
-                direction, mark=cursor, date_from=date_from, date_to=date_to
+                direction, mark=cursor, date_from=date_from, date_to=date_to,
+                should_cancel=should_cancel,
             )
             # Πρώτα μαθαίνουμε επωνυμίες, μετά γράφουμε: έτσι ένα παραστατικό
             # χωρίς <name> παίρνει την επωνυμία που είδαμε σε άλλο του ίδιου ΑΦΜ
@@ -116,7 +120,8 @@ def discover(
         # τους cursors: ένα παραστατικό που κατέβηκε χθες μπορεί να
         # χαρακτηρίστηκε σήμερα, οπότε ένα incremental sync πρέπει να το δει.
         try:
-            e3 = api.fetch_e3(mark="0", date_from=date_from, date_to=date_to)
+            e3 = api.fetch_e3(mark="0", date_from=date_from, date_to=date_to,
+                              should_cancel=should_cancel)
         except MydataError as exc:
             # Ο χαρακτηρισμός είναι επιπλέον πληροφορία, όχι ο σκοπός της
             # εφαρμογής — αν αποτύχει, τα PDF κατεβαίνουν κανονικά.
@@ -153,12 +158,17 @@ def resolve_names_via_vies(
     client_id: int | None = None,
     limit: int = 200,
     progress: ProgressFn = _noop,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> int:
     """Συμπληρώνει επωνυμίες από το VIES για ΑΦΜ που δεν ξέρουμε αλλιώς.
 
     Τρέχει μετά το backfill, οπότε ρωτάει μόνο ό,τι δεν λύθηκε από παραστατικά ή
     από τη λίστα πελατών. Κάθε ΑΦΜ ρωτιέται μία φορά — τα αποτελέσματα και οι
     αστοχίες αποθηκεύονται μόνιμα.
+
+    Το VIES είναι η πιο αργή, σειριακή φάση (έως 200 δικτυακές κλήσεις μία-μία).
+    Ελέγχουμε την ακύρωση πριν από κάθε αναζήτηση, ώστε το «Ακύρωση» να πιάνει
+    μέσα σε ένα δευτερόλεπτο αντί να περιμένει να τελειώσουν όλες.
     """
     pending = repo.vats_needing_name(conn, client_id)
     if not pending:
@@ -168,6 +178,8 @@ def resolve_names_via_vies(
     progress(f"VIES: αναζήτηση {min(len(pending), limit)} επωνυμιών…")
     with ViesClient() as vies:
         for vat in pending[:limit]:
+            if should_cancel and should_cancel():
+                break
             name = vies.lookup(vat)
             if name:
                 repo.upsert_supplier(conn, vat, name, "vies")
@@ -208,11 +220,16 @@ def download_pending(
     *,
     stats: RunStats,
     progress: ProgressFn = _noop,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> None:
     """Κατεβάζει ό,τι εκκρεμεί για έναν πελάτη.
 
     Τα workers δεν αγγίζουν sqlite: επιστρέφουν αποτέλεσμα και ο βρόχος εδώ
     (single writer) γράφει.
+
+    Η ακύρωση σταματά ΑΜΕΣΩΣ το πρόγραμμα εργασιών: παύουμε να καταναλώνουμε
+    αποτελέσματα και ακυρώνουμε όσα δεν ξεκίνησαν (``cancel_futures``). Οι λίγες
+    μεταφορτώσεις που τρέχουν ήδη ολοκληρώνονται στο παρασκήνιο — δεν περιμένουμε.
     """
     assert client.id is not None
     rows = repo.pending_documents(conn, client.id)
@@ -230,12 +247,18 @@ def download_pending(
         except Exception as exc:  # επιστρέφεται, δεν πετιέται
             return row, exc
 
+    pool_exec = ThreadPoolExecutor(max_workers=settings.max_workers)
     try:
-        with ThreadPoolExecutor(max_workers=settings.max_workers) as pool_exec:
-            for row, outcome in pool_exec.map(job, rows):
-                _persist_outcome(conn, client, settings, row, outcome, stats, pool, progress)
-                conn.commit()
+        futures = [pool_exec.submit(job, row) for row in rows]
+        for fut in futures:
+            if should_cancel and should_cancel():
+                break
+            row, outcome = fut.result()
+            _persist_outcome(conn, client, settings, row, outcome, stats, pool, progress)
+            conn.commit()
     finally:
+        # wait=False + cancel_futures: δεν κρεμάμε το UI περιμένοντας ό,τι τρέχει.
+        pool_exec.shutdown(wait=False, cancel_futures=True)
         downloader.close()
 
 
@@ -388,6 +411,7 @@ def sync_client(
     directions: Sequence[Direction] = BOTH_WAYS,
     use_vies: bool = True,
     progress: ProgressFn = _noop,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> RunStats:
     stats = RunStats()
     try:
@@ -400,7 +424,13 @@ def sync_client(
             incremental=incremental,
             directions=directions,
             progress=progress,
+            should_cancel=should_cancel,
         )
+    except OperationCancelled:
+        # Ο χρήστης ακύρωσε στη μέση της ανακάλυψης — όχι σφάλμα. Ο cursor δεν
+        # έχει προχωρήσει για την τρέχουσα κατεύθυνση, οπότε τίποτα δεν χάνεται.
+        progress(f"{client.vat}: ακυρώθηκε")
+        return stats
     except MissingKeyError:
         stats.skipped += 1
         progress(f"{client.vat}: Λείπει κλειδί API")
@@ -417,16 +447,36 @@ def sync_client(
 
     assert client.id is not None
 
+    if should_cancel and should_cancel():
+        progress(f"{client.vat}: ακυρώθηκε")
+        return stats
+
     # Το VIES καλύπτει ό,τι δεν έδωσαν τα παραστατικά ούτε η λίστα πελατών, ώστε
     # τα ονόματα αρχείων να έχουν επωνυμία και όχι σκέτο ΑΦΜ. Μετά από αυτό
     # ξαναγεμίζουμε τα κενά, πριν χτιστούν τα ονόματα των αρχείων.
     if use_vies:
         try:
-            if resolve_names_via_vies(conn, client_id=client.id, progress=progress):
+            if resolve_names_via_vies(conn, client_id=client.id, progress=progress,
+                                      should_cancel=should_cancel):
                 repo.backfill_issuer_names(conn, client.id)
                 conn.commit()
+        except OperationCancelled:
+            progress(f"{client.vat}: ακυρώθηκε")
+            return stats
         except Exception as exc:  # το VIES δεν είναι ποτέ λόγος να χαλάσει η λήψη
             log.warning("VIES: %s", exc)
+
+    if should_cancel and should_cancel():
+        progress(f"{client.vat}: ακυρώθηκε")
+        return stats
+
+    # Αυτόματη επανάληψη: όσα «κόλλησαν» ως σφάλμα αλλά έχουν σύνδεσμο (π.χ. ο
+    # πάροχος ήταν στιγμιαία εκτός) ξαναμπαίνουν στην ουρά και ξαναδοκιμάζονται
+    # τώρα — χωρίς να χρειάζεται να κάνει κάτι ο χρήστης.
+    requeued = repo.requeue_errors(conn, client.id)
+    if requeued:
+        conn.commit()
+        progress(f"{client.vat}: επανάληψη λήψης για {requeued} με σφάλμα")
 
     stats.no_url = int(
         conn.execute(
@@ -434,7 +484,8 @@ def sync_client(
             (client.id,),
         ).fetchone()["c"]
     )
-    download_pending(conn, client, settings, stats=stats, progress=progress)
+    download_pending(conn, client, settings, stats=stats, progress=progress,
+                     should_cancel=should_cancel)
     return stats
 
 
@@ -446,85 +497,121 @@ def _render_viewer_batch(
     headed: bool,
     patient: bool,
     timeout: float,
-    workers: int,
     progress: ProgressFn,
     should_cancel: Callable[[], bool] | None,
 ) -> tuple[int, int, list[sqlite3.Row]]:
-    """Αποδίδει μια παρτίδα «μόνο online» παράλληλα. Επιστρέφει (αποθηκεύτηκαν,
-    σφάλματα, όσα έμειναν κενά/ακυρώθηκαν).
+    """Αποδίδει μια παρτίδα «μόνο online» **σειριακά, με έναν browser**.
 
-    Ανεξάρτητος renderer ανά thread (το CDP socket δεν είναι thread-safe). Οι
-    εγγραφές στη βάση γίνονται μόνο στο καλών νήμα (single writer). Δεν εκπέμπει
-    μήνυμα «παραμένει μόνο online» — αυτό το αποφασίζει ο καλών, αφού τρέξουν και
-    τα δύο περάσματα (headless -> ορατό headed).
+    Επιστρέφει (αποθηκεύτηκαν, σφάλματα, όσα έμειναν κενά/ακυρώθηκαν).
+
+    Σκόπιμα ΕΝΑΣ browser και σειριακά — όχι πολλοί παράλληλοι: κάθε headless
+    Chrome/Edge είναι βαρύς (renderer + GPU + utility διεργασίες), και πέντε μαζί
+    «πάγωναν» αδύναμα μηχανήματα. Ένας browser σε χαμηλή προτεραιότητα, που
+    επαναχρησιμοποιείται σε όλες τις σελίδες, είναι σταθερός και αρκετά γρήγορος.
+
+    Η ακύρωση γίνεται αισθητή σε <0.5s: ελέγχεται πριν από κάθε σελίδα και μέσα
+    στην αναμονή απόδοσης (``render_pdf(should_cancel=…)`` -> ``HeadlessCancelled``).
     """
-    import threading
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    from .download.headless import HeadlessError, HeadlessRenderer
-
-    local = threading.local()
-    renderers: list[HeadlessRenderer] = []
-    rlock = threading.Lock()
-
-    def renderer_for_thread() -> HeadlessRenderer:
-        r = getattr(local, "renderer", None)
-        if r is None:
-            r = HeadlessRenderer(headed=headed)
-            local.renderer = r
-            with rlock:
-                renderers.append(r)
-        return r
-
-    def job(row: sqlite3.Row):
-        if should_cancel and should_cancel():
-            return row, "cancel", None
-        try:
-            pdf = renderer_for_thread().render_pdf(
-                row["downloading_invoice_url"], patient=patient, timeout=timeout
-            )
-        except HeadlessError as exc:
-            return row, "error", exc
-        return row, "ok", pdf
+    from .download.headless import HeadlessCancelled, HeadlessError, HeadlessRenderer
 
     saved = failed = 0
     remaining: list[sqlite3.Row] = []
+    renderer: HeadlessRenderer | None = None
+    cancelled = False
     try:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(job, row) for row in rows]
-            for fut in as_completed(futures):
-                row, kind, payload = fut.result()
-                label = row["client_label"] or row["client_vat"]
-                if kind == "cancel":
-                    remaining.append(row)
-                    continue
-                if kind == "error":
-                    failed += 1
-                    log.warning("Render απέτυχε (%s): %s", row["mark"], payload)
-                    progress(f"  ✗ {label}: σφάλμα browser")
-                    continue
-                pdf = payload
-                if pdf is None:
-                    remaining.append(row)
-                    continue
-                doc = _doc_from_row(row)
-                path = resolve_path(settings.storage_root, row["client_vat"], doc,
-                                    client_label=row["client_label"])
-                size, sha = write_atomic(path, pdf)
-                repo.mark_downloaded(
-                    conn, row["client_id"], row["mark"],
-                    str(path.relative_to(settings.storage_root)), size, sha,
-                )
-                conn.commit()
-                saved += 1
-                progress(f"  ✓ {label}: PDF ({size:,} B)")
-    finally:
-        for r in renderers:
+        for row in rows:
+            label = row["client_label"] or row["client_vat"]
+            if cancelled or (should_cancel and should_cancel()):
+                cancelled = True
+                remaining.append(row)
+                continue
+            # Ο browser ανοίγει μόλις χρειαστεί (lazily) — αν όλα ακυρωθούν πριν
+            # ξεκινήσουμε, δεν ανοίγει καθόλου. Η ίδια η εκκίνηση είναι ακυρώσιμη.
             try:
-                r.close()
+                if renderer is None:
+                    renderer = HeadlessRenderer(headed=headed,
+                                                should_cancel=should_cancel)
+                pdf = renderer.render_pdf(
+                    row["downloading_invoice_url"], patient=patient,
+                    timeout=timeout, should_cancel=should_cancel,
+                )
+            except HeadlessCancelled:
+                cancelled = True
+                remaining.append(row)
+                continue
+            except HeadlessError as exc:
+                failed += 1
+                log.warning("Render απέτυχε (%s): %s", row["mark"], exc)
+                progress(f"  ✗ {label}: σφάλμα browser")
+                continue
+            if pdf is None:
+                remaining.append(row)
+                continue
+            doc = _doc_from_row(row)
+            path = resolve_path(settings.storage_root, row["client_vat"], doc,
+                                client_label=row["client_label"])
+            size, sha = write_atomic(path, pdf)
+            repo.mark_downloaded(
+                conn, row["client_id"], row["mark"],
+                str(path.relative_to(settings.storage_root)), size, sha,
+            )
+            conn.commit()
+            saved += 1
+            progress(f"  ✓ {label}: PDF ({size:,} B)")
+    finally:
+        if renderer is not None:
+            try:
+                renderer.close()
             except Exception:  # noqa: BLE001
                 pass
     return saved, failed, remaining
+
+
+def _direct_fetch_batch(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    rows: list[sqlite3.Row],
+    *,
+    progress: ProgressFn,
+    should_cancel: Callable[[], bool] | None,
+) -> tuple[int, list[sqlite3.Row]]:
+    """Δοκιμάζει **άμεση** λήψη PDF πριν καν ανοίξει browser.
+
+    Κάποιοι πάροχοι που φαίνονται «μόνο online» έχουν στην πραγματικότητα άμεσο
+    PDF endpoint — επιβεβαιωμένο στη **Megasoft** (``…/qr?QrCode=…/pdf`` ->
+    application/pdf). Το κερδίζουμε εδώ γρήγορα, χωρίς browser. Ό,τι επιστρέφει
+    HTML/σφάλμα (etimologiera, Epsilon…) πάει στα browser περάσματα.
+
+    Επιστρέφει (αποθηκεύτηκαν, όσα έμειναν).
+    """
+    downloader = ProviderDownloader(settings)
+    saved = 0
+    remaining: list[sqlite3.Row] = []
+    try:
+        for row in rows:
+            if should_cancel and should_cancel():
+                remaining.append(row)
+                continue
+            label = row["client_label"] or row["client_vat"]
+            try:
+                result = downloader.fetch_pdf(row["downloading_invoice_url"])
+            except Exception:  # noqa: BLE001 — HTML/σφάλμα: δοκίμασε browser μετά
+                remaining.append(row)
+                continue
+            doc = _doc_from_row(row)
+            path = resolve_path(settings.storage_root, row["client_vat"], doc,
+                                client_label=row["client_label"])
+            size, sha = write_atomic(path, result.payload)  # type: ignore[attr-defined]
+            repo.mark_downloaded(
+                conn, row["client_id"], row["mark"],
+                str(path.relative_to(settings.storage_root)), size, sha,
+            )
+            conn.commit()
+            saved += 1
+            progress(f"  ✓ {label}: PDF άμεσα από τον πάροχο ({size:,} B)")
+    finally:
+        downloader.close()
+    return saved, remaining
 
 
 def download_viewer_only(
@@ -536,35 +623,47 @@ def download_viewer_only(
     should_cancel: Callable[[], bool] | None = None,
     headed_fallback: bool = True,
 ) -> tuple[int, int, int]:
-    """Κατεβάζει τα «μόνο online» παραστατικά, σε δύο περάσματα.
+    """Κατεβάζει τα «μόνο online» παραστατικά, σε τρία περάσματα.
 
-    1. **Headless, παράλληλα** (έως ``min(5, CPU)``): γρήγορο, αόρατο — πιάνει
-       τους παρόχους που στοιχειοθετούνται χωρίς έλεγχο «είστε άνθρωπος».
-    2. **Ορατό (headed) browser** για όσα έμειναν κενά (π.χ. πίσω από Cloudflare):
-       ανοίγει ορατά παράθυρα ώστε ο χρήστης να περάσει ο ίδιος τυχόν έλεγχο, και
-       μετά τυπώνουμε τη σελίδα σε PDF. **Δεν παρακάμπτουμε κανέναν έλεγχο** —
-       απλώς δεν κρύβουμε τον browser.
+    0. **Άμεση λήψη PDF** από τον πάροχο (χωρίς browser): πιάνει τη **Megasoft**,
+       που έχει άμεσο ``/pdf`` endpoint παρότι δείχνει σελίδα QR.
+    1. **Headless browser** (αόρατο): πιάνει τους παρόχους που στοιχειοθετούν το
+       παραστατικό στη σελίδα χωρίς έλεγχο «είστε άνθρωπος» (π.χ. e-timologiera).
+    2. **Ορατό (headed) browser** για όσα έμειναν (π.χ. Epsilon πίσω από
+       Cloudflare Turnstile): ανοίγει ορατά παράθυρα ώστε ο χρήστης να περάσει ο
+       ίδιος τον έλεγχο, και μετά τυπώνουμε τη σελίδα σε PDF. **Δεν παρακάμπτουμε
+       κανέναν έλεγχο** — απλώς δεν κρύβουμε τον browser.
 
     Επιστρέφει (αποθηκεύτηκαν, παραλείφθηκαν, σφάλματα).
     """
-    from .download.headless import BrowserNotFound, find_browser
+    from .download.headless import find_browser
 
     rows = repo.viewer_only_documents(conn, vats)
     if not rows:
         return 0, 0, 0
-    if find_browser() is None:
-        raise BrowserNotFound(
-            "Δεν βρέθηκε Microsoft Edge ή Google Chrome για τη λήψη των «μόνο "
-            "online» παραστατικών."
-        )
 
-    cpu = os.cpu_count() or 1
-    # Πέρασμα 1: headless, παράλληλα.
-    saved, failed, remaining = _render_viewer_batch(
-        conn, settings, rows, headed=False, patient=False, timeout=30.0,
-        workers=max(1, min(5, cpu, len(rows))),
+    # Πέρασμα 0: άμεση λήψη PDF (Megasoft κ.ά.) — γρήγορο, χωρίς browser.
+    saved, remaining = _direct_fetch_batch(
+        conn, settings, rows, progress=progress, should_cancel=should_cancel,
+    )
+    failed = 0
+    if not remaining:
+        return saved, 0, failed
+
+    # Τα browser περάσματα χρειάζονται Edge/Chrome. Αν λείπει, ό,τι δεν πιάστηκε
+    # άμεσα μένει «μόνο online» — δεν είναι σφάλμα.
+    if find_browser() is None:
+        for row in remaining:
+            label = row["client_label"] or row["client_vat"]
+            progress(f"  ⧉ {label}: παραμένει μόνο online (χωρίς Edge/Chrome)")
+        return saved, len(remaining), failed
+
+    # Πέρασμα 1: headless, σειριακά με έναν browser (σταθερό, χαμηλή προτεραιότητα).
+    s1, failed, remaining = _render_viewer_batch(
+        conn, settings, remaining, headed=False, patient=False, timeout=30.0,
         progress=progress, should_cancel=should_cancel,
     )
+    saved += s1
 
     # Πέρασμα 2: ορατός headed browser για όσα έμειναν, αν το θέλει ο χρήστης.
     cancelled = bool(should_cancel and should_cancel())
@@ -577,7 +676,7 @@ def download_viewer_only(
         # προηγούμενο — πιο ξεκάθαρο από πολλά παράθυρα μαζί.
         s2, f2, remaining = _render_viewer_batch(
             conn, settings, remaining, headed=True, patient=True, timeout=150.0,
-            workers=1, progress=progress, should_cancel=should_cancel,
+            progress=progress, should_cancel=should_cancel,
         )
         saved += s2
         failed += f2

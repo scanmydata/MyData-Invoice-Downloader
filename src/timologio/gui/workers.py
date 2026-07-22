@@ -18,7 +18,7 @@ from .. import repo
 from ..config import load_settings
 from ..crypto import Crypto
 from ..db import init_db
-from ..models import ClientStatus, Direction
+from ..models import ClientStatus, Direction, OperationCancelled
 
 
 class SyncWorker(QObject):
@@ -103,6 +103,7 @@ class SyncWorker(QObject):
                     directions=self._directions,
                     use_vies=self._use_vies,
                     progress=lambda m: self.message.emit(m),
+                    should_cancel=self._cancel.is_set,
                 )
                 found += stats.docs_found
                 pdfs += stats.pdfs_ok
@@ -122,6 +123,9 @@ class SyncWorker(QObject):
             repo.finish_run(conn, run_id, "aborted" if self._cancel.is_set() else "completed")
             conn.close()
             self.finished.emit(not self._cancel.is_set())
+        except OperationCancelled:
+            # Ακύρωση στη μέση — όχι σφάλμα. Τερματίζουμε καθαρά.
+            self.finished.emit(False)
         except Exception as exc:  # το thread δεν πρέπει ποτέ να πεθάνει σιωπηλά
             self.failed.emit(f"{exc}\n\n{traceback.format_exc()}")
         finally:

@@ -20,7 +20,9 @@ from ..config import (
     URL_REQUEST_TRANSMITTED_DOCS,
     Settings,
 )
-from ..models import Classification, Direction, Document
+from collections.abc import Callable
+
+from ..models import Classification, Direction, Document, OperationCancelled
 from .e3 import parse_e3
 from .errors import AuthError, RateLimitError, TransientError
 from .parse import extract_cursors, parse_documents
@@ -79,6 +81,7 @@ class MydataClient:
         date_from: str | None = None,
         date_to: str | None = None,
         entity_vat: str | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> list[Document]:
         """Κατεβάζει όλα τα παραστατικά μιας κατεύθυνσης, με pagination.
 
@@ -104,6 +107,10 @@ class MydataClient:
         resume_guard: set[str] = set()
 
         while True:
+            # Ακύρωση ανάμεσα στις σελίδες: ένα μεγάλο διάστημα μπορεί να έχει
+            # δεκάδες σελίδες — χωρίς αυτό η ακύρωση δεν «πιανόταν» μέχρι το τέλος.
+            if should_cancel and should_cancel():
+                raise OperationCancelled()
             payload = self._get(url, params)
             docs, cursors = parse_documents(payload, direction)
 
@@ -157,6 +164,7 @@ class MydataClient:
         date_from: str | None = None,
         date_to: str | None = None,
         entity_vat: str | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> dict[str, Classification]:
         """MARK -> κατάσταση χαρακτηρισμού.
 
@@ -180,6 +188,8 @@ class MydataClient:
         seen_tokens: set[str] = set()
 
         while True:
+            if should_cancel and should_cancel():
+                raise OperationCancelled()
             payload = self._get(URL_REQUEST_E3_INFO, params)
             result.update(parse_e3(payload))
 

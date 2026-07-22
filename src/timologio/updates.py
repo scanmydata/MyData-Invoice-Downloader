@@ -111,13 +111,22 @@ def download(asset_url: str, dest: Path, progress=None, timeout: int = 30) -> Pa
 
 
 def build_updater_script(
-    *, pid: int, setup: Path, app_exe: Path, data_dir: Path, role: str, tray: bool
+    *, pid: int, setup: Path, app_exe: Path, data_dir: Path, role: str, tray: bool,
+    install_dir: Path | None = None,
 ) -> str:
     """PowerShell που τρέχει ΑΦΟΥ κλείσει η εφαρμογή: εγκαθιστά και ξαναανοίγει.
 
     Περιμένει πρώτα να τερματίσει η τρέχουσα διεργασία (ώστε να ξεκλειδώσουν τα
     αρχεία), τρέχει τον installer σιωπηλά περνώντας τις ΤΡΕΧΟΥΣΕΣ ρυθμίσεις
     (φάκελος/ρόλος/tray) ώστε να μη χαθούν, και μετά ξεκινά τη νέα έκδοση.
+
+    ``install_dir`` (ο φάκελος όπου τρέχει ήδη η εφαρμογή, από το ``sys.executable``)
+    περνιέται ρητά ως ``/DIR`` στον installer. ΚΡΙΣΙΜΟ: χωρίς αυτό, αν λείπει το
+    κλειδί απεγκατάστασης του Inno (π.χ. εγκατάσταση από παλιότερη έκδοση, ή
+    χειροκίνητη αντιγραφή), ο installer ΔΕΝ βρίσκει την προηγούμενη εγκατάσταση και
+    εγκαθιστά στον **προεπιλεγμένο** φάκελο — όχι εκεί που τρέχει η εφαρμογή. Τότε
+    η νέα έκδοση πάει αλλού, και το relaunch ξανανοίγει την **παλιά** («η ενημέρωση
+    δεν δουλεύει»). Με ρητό ``/DIR`` η αναβάθμιση γίνεται πάντα ακριβώς από πάνω.
     """
     def q(text: str) -> str:  # single-quoted PowerShell literal
         return "'" + str(text).replace("'", "''") + "'"
@@ -129,8 +138,10 @@ def build_updater_script(
     # Ο installer γράφει log δίπλα στο setup, ώστε μια αποτυχία να είναι ορατή.
     log_path = setup.with_name("timologio_update_inno.log")
     proc_name = app_exe.stem
+    dir_arg = f"'/DIR={esc(install_dir)}'," if install_dir is not None else ""
     args = (
         f"'/SILENT','/SUPPRESSMSGBOXES','/NORESTART',"
+        f"{dir_arg}"
         f"'/LOG={esc(log_path)}',"
         f"'/DATADIR={esc(data_dir)}',"
         f"'/ROLE={role}','{tray_flag}'"
@@ -144,6 +155,11 @@ def build_updater_script(
         "$deadline=(Get-Date).AddSeconds(30)\n"
         f"while ((Get-Process -Name {q(proc_name)} -ErrorAction SilentlyContinue) "
         f"-and (Get-Date) -lt $deadline) {{ Start-Sleep -Milliseconds 500 }}\n"
+        # Δίχτυ ασφαλείας: αν κάποια instance επιμένει (π.χ. μαζεμένη στο tray),
+        # την κλείνουμε με τη βία — αλλιώς τα αρχεία μένουν κλειδωμένα και ο
+        # installer αποτυγχάνει σιωπηλά. Τερματίζουμε ούτως ή άλλως — αυτός είναι
+        # ο σκοπός της ενημέρωσης.
+        f"Stop-Process -Name {q(proc_name)} -Force -ErrorAction SilentlyContinue\n"
         # ΚΡΙΣΙΜΟ: ο πυρήνας του Windows απελευθερώνει τα mapped DLL (Qt κ.λπ.) με
         # μικρή καθυστέρηση ΜΕΤΑ τον τερματισμό. Χωρίς αυτή την αναμονή, ο
         # installer έβρισκε κλειδωμένα αρχεία, δεν τα αντικαθιστούσε (σιωπηλά, λόγω

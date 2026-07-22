@@ -15,6 +15,7 @@ from timologio.models import Client, Direction, Document
 from timologio.reports import (
     count_without_pdf,
     documents_for,
+    export_documents_xlsx,
     export_zip,
     invoice_types_of,
     suppliers_of,
@@ -241,6 +242,43 @@ def test_zip_leaves_out_xml_when_refused(conn: sqlite3.Connection,
     assert missing == 1, "το παραστατικό χωρίς PDF μετριέται ως εκτός"
     with zipfile.ZipFile(target) as zf:
         assert all(n.endswith(".pdf") for n in zf.namelist())
+
+
+# --------------------------------------------------------------------------
+# Εξαγωγή Excel (.xlsx) ως ταξινομήσιμος πίνακας
+# --------------------------------------------------------------------------
+
+def test_export_xlsx_is_a_sortable_table(conn: sqlite3.Connection, tmp_path: Path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    out = tmp_path / "παραστατικά.xlsx"
+    n = export_documents_xlsx(conn, out, CLIENT_VAT)
+    assert n == 3
+    assert out.exists()
+
+    wb = openpyxl.load_workbook(out)
+    ws = wb.active
+    # Πραγματικός πίνακας Excel -> autofilter + ταξινόμηση με ένα κλικ.
+    assert "Παραστατικά" in ws.tables
+    # Παγωμένη επικεφαλίδα.
+    assert ws.freeze_panes == "A2"
+    header = [c.value for c in ws[1]]
+    assert header[0] == "ΑΦΜ Πελάτη" and "Σύνολο" in header
+    # Τα ποσά είναι αριθμοί (ταξινομούνται/αθροίζονται), όχι κείμενο.
+    gross_col = header.index("Σύνολο") + 1
+    values = [ws.cell(row=r, column=gross_col).value for r in range(2, 2 + n)]
+    # Αριθμοί (int/float), όχι κείμενο -> ταξινομούνται/αθροίζονται στο Excel.
+    assert all(isinstance(v, (int, float)) for v in values)
+    assert sorted(float(v) for v in values) == [6.2, 12.4, 124.0]
+
+
+def test_export_xlsx_empty_client_still_valid(conn: sqlite3.Connection,
+                                              tmp_path: Path) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    out = tmp_path / "κενό.xlsx"
+    n = export_documents_xlsx(conn, out, "000000000")  # ανύπαρκτος -> 0 γραμμές
+    assert n == 0
+    wb = openpyxl.load_workbook(out)  # δεν πρέπει να σκάει σε άδειο table
+    assert "Παραστατικά" in wb.active.tables
 
 
 # --------------------------------------------------------------------------

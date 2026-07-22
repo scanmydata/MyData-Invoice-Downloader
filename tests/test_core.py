@@ -33,13 +33,17 @@ def test_pdf_url_preserves_other_formats() -> None:
         assert pdf_url(f"https://x.gr/p/a{suffix}") == f"https://x.gr/p/a{suffix}"
 
 
-def test_pdf_url_leaves_query_string_urls_untouched() -> None:
-    """Megasoft: …/invoiceinspect/qr?QrCode=ABC. Το /pdf θα κολλούσε ΜΕΣΑ στο
-    query (?QrCode=ABC/pdf) και θα κατέστρεφε τον σύνδεσμο."""
-    url = "https://invoicelink.megasoft.gr/invoiceinspect/qr?QrCode=ABC123=="
-    assert pdf_url(url) == url
-    # Ούτε το trailing slash του query πειράζεται.
-    assert pdf_url(url + "/") == url + "/"
+def test_pdf_url_appends_pdf_to_megasoft_query_urls() -> None:
+    """Megasoft: …/invoiceinspect/qr?QrCode=ABC/  ->  …?QrCode=ABC/pdf.
+
+    Επιβεβαιωμένο ζωντανά: με ``/pdf`` ο πάροχος επιστρέφει application/pdf
+    (κανονικό τιμολόγιο), ενώ χωρίς αυτό δίνει τη σελίδα QR-προβολής (HTML).
+    Παλιότερα το παραλείπαμε για query URLs — λάθος: τα παραστατικά της Megasoft
+    «κολλούσαν» ως «μόνο online» ενώ κατεβαίνουν άμεσα.
+    """
+    base = "https://invoicelink.megasoft.gr/invoiceinspect/qr?QrCode=ABC123=="
+    assert pdf_url(base + "/") == base + "/pdf"
+    assert pdf_url(base) == base + "/pdf"
 
 
 # --------------------------------------------------------------------------

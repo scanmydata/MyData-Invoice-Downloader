@@ -397,6 +397,29 @@ def mark_viewer_only(conn: sqlite3.Connection, client_id: int, mark: str) -> Non
     )
 
 
+def requeue_errors(conn: sqlite3.Connection, client_id: int) -> int:
+    """Επαναφέρει σε «εκκρεμότητα» τα παραστατικά με σφάλμα που ΕΧΟΥΝ σύνδεσμο.
+
+    Πολλά σφάλματα είναι παροδικά: ο πάροχος ήταν στιγμιαία εκτός (π.χ. το
+    Megasoft με SSL error), οπότε το παραστατικό «κόλλησε» ως σφάλμα ενώ ο
+    σύνδεσμος δουλεύει μια χαρά τώρα. Πριν από κάθε λήψη τα ξαναβάζουμε στην ουρά
+    ώστε να ξαναδοκιμαστούν μόνα τους — μηδενίζοντας τον μετρητή προσπαθειών και
+    τον χρόνο αναμονής. Επιστρέφει πόσα επαναφέρθηκαν.
+
+    Μόνο όσα έχουν σύνδεσμο: τα «no_provider_url» (χωρίς σύνδεσμο από το myDATA)
+    δεν έχουν τι να ξαναδοκιμάσουν εδώ — θέλουν νέα ανακάλυψη (πλήρης λήψη).
+    """
+    cur = conn.execute(
+        """UPDATE documents
+           SET status='pending', retry_count=0, next_retry_at='', error_text=''
+           WHERE client_id=?
+             AND status IN ('failed_retryable','failed_permanent')
+             AND downloading_invoice_url <> ''""",
+        (client_id,),
+    )
+    return cur.rowcount or 0
+
+
 def mark_failed(
     conn: sqlite3.Connection,
     client_id: int,

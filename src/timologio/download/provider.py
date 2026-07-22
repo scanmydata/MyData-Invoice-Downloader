@@ -73,14 +73,14 @@ def pdf_url(base: str) -> str:
     PDF. Μετρημένα, Epsilon και Impact επιστρέφουν HTML σελίδα προβολής, οπότε
     το suffix είναι υποχρεωτικό — όχι προαιρετικό.
 
-    ΕΞΑΙΡΕΣΗ: σύνδεσμοι με query string (π.χ. Megasoft
-    ``…/invoiceinspect/qr?QrCode=…``) δεν παίρνουν suffix. Το ``/pdf`` θα
-    προσκολλιόταν μέσα στην τιμή του query (``?QrCode=ABC/pdf``) και θα
-    κατέστρεφε τον σύνδεσμο. Αυτοί οι πάροχοι δεν έχουν μορφότυπο ``/pdf``
-    ούτως ή άλλως — τους αφήνουμε ως έχουν.
+    Το ``/pdf`` μπαίνει ΚΑΙ σε συνδέσμους με query string. Επιβεβαιωμένο στη
+    Megasoft (``…/invoiceinspect/qr?QrCode=…/``): με ``/pdf`` επιστρέφει
+    κανονικό PDF (content-type application/pdf), ενώ χωρίς αυτό δίνει τη σελίδα
+    QR-προβολής (HTML). Παλιότερα το παραλείπαμε για τα query URLs — λάθος: τα
+    παραστατικά της Megasoft «κολλούσαν» ως «μόνο online» ενώ κατεβαίνουν άμεσα.
+    Αν κάποιος πάροχος δεν υποστηρίζει το ``/pdf``, θα γυρίσει HTML και το
+    παραστατικό θα σημειωθεί απλώς ως «μόνο online» — καμία ζημιά.
     """
-    if "?" in base or "#" in base:
-        return base
     trimmed = base.rstrip("/")
     if trimmed.endswith(_FORMAT_SUFFIXES):
         return trimmed

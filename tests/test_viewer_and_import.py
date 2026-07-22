@@ -193,6 +193,15 @@ def test_download_viewer_only_saves_renderable_keeps_rest(conn, tmp_path, monkey
     from timologio import sync
     from timologio.config import Settings
     from timologio.download import headless
+    from timologio.download.provider import NotAPdf
+
+    # Το πέρασμα 0 (άμεση λήψη) δεν πρέπει να χτυπά δίκτυο στο test: το κάνουμε
+    # να «βλέπει» τα πάντα ως μόνο-online (NotAPdf) ώστε να πέσουν στον renderer.
+    def _no_direct(self, url):
+        raise NotAPdf("html")
+    monkeypatch.setattr(
+        "timologio.download.provider.ProviderDownloader.fetch_pdf", _no_direct
+    )
 
     cid = _add_doc(conn, "M_good", "viewer_only")
     # συμπληρώνουμε url/στοιχεία στη γραμμή που έφτιαξε το _add_doc
@@ -232,3 +241,38 @@ def test_download_viewer_only_saves_renderable_keeps_rest(conn, tmp_path, monkey
     assert (settings.storage_root / rows["M_good"]["local_path"]).exists()
     assert rows["M_bad"]["status"] == "viewer_only"
     assert rows["M_bad"]["local_path"] == ""
+
+
+def test_direct_fetch_recovers_provider_with_pdf(conn, tmp_path, monkeypatch):
+    """Πέρασμα 0: πάροχος με άμεσο PDF (π.χ. Megasoft) κατεβαίνει ΧΩΡΙΣ browser."""
+    from timologio import sync
+    from timologio.config import Settings
+    from timologio.download.provider import NotAPdf, PdfResult
+
+    cid = _add_doc(conn, "M_direct", "viewer_only")
+    conn.execute(
+        "UPDATE documents SET downloading_invoice_url='https://invoicelink.megasoft.gr"
+        "/invoiceinspect/qr?QrCode=ABC/',issuer_vat='111',series='A',aa='1',"
+        "issue_date='2026-01-01' WHERE mark='M_direct'")
+    conn.execute(
+        "INSERT INTO documents(client_id,mark,status,downloading_invoice_url,"
+        "issuer_vat,series,aa,issue_date) VALUES(?,?,?,?,?,?,?,?)",
+        (cid, "M_html", "viewer_only", "https://prov/html", "222", "A", "2", "2026-01-02"))
+    conn.commit()
+
+    def fake_fetch(self, url):
+        if "megasoft" in url:
+            return PdfResult(payload=b"%PDF-1.4\nmega\n%%EOF", url=url)
+        raise NotAPdf("html")
+    monkeypatch.setattr(
+        "timologio.download.provider.ProviderDownloader.fetch_pdf", fake_fetch)
+
+    settings = Settings(data_dir=tmp_path)
+    saved, remaining = sync._direct_fetch_batch(
+        conn, settings, sync.repo.viewer_only_documents(conn),
+        progress=lambda m: None, should_cancel=None)
+    assert saved == 1
+    assert [r["mark"] for r in remaining] == ["M_html"]
+    got = {r["mark"]: r["status"] for r in conn.execute("SELECT mark,status FROM documents")}
+    assert got["M_direct"] == "downloaded"
+    assert got["M_html"] == "viewer_only"

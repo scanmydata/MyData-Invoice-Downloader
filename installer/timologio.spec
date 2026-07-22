@@ -37,10 +37,14 @@ a = Analysis(
     ] + TZDATA,
     # websocket-client (import name «websocket») το φορτώνει το headless module
     # με τοπικό import, οπότε το PyInstaller δεν το βλέπει από το στατικό δέντρο.
+    # websocket-client (import name «websocket») και openpyxl φορτώνονται με
+    # τοπικά imports (headless render, εξαγωγή Excel), οπότε το PyInstaller δεν
+    # τα βλέπει από το στατικό δέντρο.
     hiddenimports=(
         collect_submodules("timologio")
         + collect_submodules("websocket")
-        + ["tzdata"]
+        + collect_submodules("openpyxl")
+        + ["et_xmlfile", "tzdata"]
     ),
     hookspath=[],
     runtime_hooks=[],

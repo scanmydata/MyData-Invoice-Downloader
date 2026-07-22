@@ -6,6 +6,14 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 
+class OperationCancelled(Exception):
+    """Ο χρήστης ακύρωσε τη λειτουργία. ΔΕΝ είναι σφάλμα — απλώς σταματάμε.
+
+    Ζει εδώ (ουδέτερο σημείο) ώστε να τη σηκώνουν και τα κατώτερα επίπεδα
+    (mydata client, VIES) χωρίς να εξαρτώνται από το GUI ή το sync.
+    """
+
+
 class DocStatus(StrEnum):
     PENDING = "pending"
     DOWNLOADED = "downloaded"
