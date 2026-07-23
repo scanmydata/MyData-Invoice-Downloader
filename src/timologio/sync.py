@@ -489,6 +489,39 @@ def sync_client(
     return stats
 
 
+class AllBrowsersFailed(Exception):
+    """Κανένας από τους διαθέσιμους browsers δεν άνοιξε."""
+
+
+def _open_renderer_with_fallback(
+    browsers, browser_idx, *, headed, should_cancel, progress,
+):
+    """Ανοίγει renderer δοκιμάζοντας τους browsers με τη σειρά (Edge → Chrome).
+
+    Επιστρέφει (renderer, νέος_δείκτης). Αν ο πρώτος δεν ξεκινά («σφάλμα
+    browser»), δοκιμάζει τον επόμενο· έτσι ο χρήστης δεν κολλάει επειδή π.χ. ο
+    Edge έχει πρόβλημα. Πετά ``HeadlessCancelled`` σε ακύρωση, ή
+    ``AllBrowsersFailed`` αν κανένας δεν ανοίξει.
+    """
+    from .download.headless import HeadlessCancelled, HeadlessError, HeadlessRenderer
+
+    idx = browser_idx
+    while idx < len(browsers):
+        try:
+            renderer = HeadlessRenderer(
+                browser=browsers[idx], headed=headed, should_cancel=should_cancel,
+            )
+            if idx > browser_idx:
+                progress(f"  ↻ δοκιμή με {browsers[idx].name}")
+            return renderer, idx
+        except HeadlessCancelled:
+            raise
+        except HeadlessError as exc:
+            log.warning("Ο browser %s δεν άνοιξε: %s", browsers[idx].name, exc)
+            idx += 1
+    raise AllBrowsersFailed()
+
+
 def _render_viewer_batch(
     conn: sqlite3.Connection,
     settings: Settings,
@@ -512,14 +545,24 @@ def _render_viewer_batch(
     Η ακύρωση γίνεται αισθητή σε <0.5s: ελέγχεται πριν από κάθε σελίδα και μέσα
     στην αναμονή απόδοσης (``render_pdf(should_cancel=…)`` -> ``HeadlessCancelled``).
     """
-    from .download.headless import HeadlessCancelled, HeadlessError, HeadlessRenderer
+    from .download.headless import (
+        HeadlessCancelled,
+        HeadlessError,
+        HeadlessRenderer,
+        find_browsers,
+    )
 
     saved = failed = 0
     remaining: list[sqlite3.Row] = []
     renderer: HeadlessRenderer | None = None
+    # Fallback browsers: αν ο πρώτος (Edge) δεν ανοίγει — «σφάλμα browser» —
+    # δοκιμάζουμε τον επόμενο (Chrome). Ο δείκτης προχωρά μόνιμα ώστε να μην
+    # ξαναδοκιμάζουμε browser που ήδη απέτυχε να ξεκινήσει.
+    browsers = find_browsers()
+    browser_idx = 0
     cancelled = False
     try:
-        for row in rows:
+        for i, row in enumerate(rows):
             label = row["client_label"] or row["client_vat"]
             if cancelled or (should_cancel and should_cancel()):
                 cancelled = True
@@ -529,8 +572,10 @@ def _render_viewer_batch(
             # ξεκινήσουμε, δεν ανοίγει καθόλου. Η ίδια η εκκίνηση είναι ακυρώσιμη.
             try:
                 if renderer is None:
-                    renderer = HeadlessRenderer(headed=headed,
-                                                should_cancel=should_cancel)
+                    renderer, browser_idx = _open_renderer_with_fallback(
+                        browsers, browser_idx, headed=headed,
+                        should_cancel=should_cancel, progress=progress,
+                    )
                 pdf = renderer.render_pdf(
                     row["downloading_invoice_url"], patient=patient,
                     timeout=timeout, should_cancel=should_cancel,
@@ -539,6 +584,13 @@ def _render_viewer_batch(
                 cancelled = True
                 remaining.append(row)
                 continue
+            except AllBrowsersFailed:
+                # Κανένας browser δεν άνοιξε — δεν έχει νόημα να δοκιμάσουμε τις
+                # υπόλοιπες γραμμές. Μένουν «μόνο online».
+                failed += 1
+                progress(f"  ✗ {label}: σφάλμα browser (δοκιμάστηκαν όλοι)")
+                remaining.extend(rows[i + 1:])
+                break
             except HeadlessError as exc:
                 failed += 1
                 log.warning("Render απέτυχε (%s): %s", row["mark"], exc)

@@ -157,3 +157,54 @@ def test_download_viewer_only_headed_fallback(
         conn, settings, headed_fallback=False
     )
     assert (saved2, skipped2, failed2) == (0, 1, 0)
+
+
+def test_online_only_dialog_order_and_selection(
+    conn: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """Ο πίνακας ταξινομείται· η σειρά επεξεργασίας ακολουθεί την ταξινόμηση και
+    η επιλογή γραμμής υπερισχύει."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    from timologio.gui.online_only import (
+        _COL_PARTY,
+        _COL_STATUS,
+        _MARK_ROLE,
+        OnlineOnlyDialog,
+    )
+
+    cid = conn.execute("SELECT id FROM clients WHERE vat=?", (CLIENT_VAT,)).fetchone()["id"]
+    upsert_document(
+        conn, cid,
+        Document(mark="M_AAA", invoice_type="1.1", issuer_vat="1",
+                 issuer_name="AAA ΠΡΩΤΗ", counter_vat=CLIENT_VAT, series="A", aa="7",
+                 issue_date="2026-05-05", direction=Direction.INCOMING,
+                 downloading_invoice_url="https://prov/a", provider_host="prov"))
+    mark_viewer_only(conn, cid, "M_AAA")
+    upsert_document(
+        conn, cid,
+        Document(mark="M_MMM", invoice_type="1.1", issuer_vat="2",
+                 issuer_name="MMM ΔΕΥΤΕΡΗ", counter_vat=CLIENT_VAT, series="A", aa="6",
+                 issue_date="2026-04-04", direction=Direction.INCOMING,
+                 downloading_invoice_url="https://prov/m", provider_host="prov"))
+    mark_viewer_only(conn, cid, "M_MMM")
+    conn.commit()
+
+    QApplication.instance() or QApplication([])
+    settings = Settings(data_dir=tmp_path / "data")
+    dlg = OnlineOnlyDialog(conn, settings, viewer_only_documents(conn), None)
+    try:
+        # Ταξινόμηση κατά «Αντισυμβαλλόμενος» αύξουσα -> πρώτο pending = AAA.
+        dlg.table.sortByColumn(_COL_PARTY, Qt.SortOrder.AscendingOrder)
+        first_visual = dlg._visual_marks()[0]
+        assert dlg._current()["mark"] == first_visual == "M_AAA"
+
+        # Επιλογή γραμμής υπερισχύει της σειράς: επιλέγουμε το M_MMM.
+        for i in range(dlg.table.rowCount()):
+            if dlg.table.item(i, _COL_STATUS).data(_MARK_ROLE) == "M_MMM":
+                dlg.table.selectRow(i)
+                break
+        assert dlg._selected_pending_row()["mark"] == "M_MMM"
+    finally:
+        dlg.deleteLater()

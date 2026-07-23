@@ -70,11 +70,12 @@ def _registry_app_path(exe: str) -> str | None:
     return None
 
 
-def find_browser() -> Path | None:
-    """Επιστρέφει τη διαδρομή του Edge (προτιμάται) ή του Chrome, ή None.
+def find_browsers() -> list[Path]:
+    """Όλοι οι διαθέσιμοι browsers (Edge πρώτα, μετά Chrome), χωρίς διπλά.
 
-    Το Edge είναι προεγκατεστημένο σε κάθε Windows 10/11, οπότε στην πράξη
-    υπάρχει σχεδόν πάντα κάτι διαθέσιμο.
+    Επιστρέφει λίστα ώστε να υπάρχει **fallback**: αν ο πρώτος (π.χ. Edge) δεν
+    ανοίγει — «σφάλμα browser» κατά την εκκίνηση — δοκιμάζουμε τον επόμενο
+    (Chrome). Το Edge είναι προεγκατεστημένο σε κάθε Windows 10/11.
     """
     pf = os.environ.get("ProgramFiles", r"C:\Program Files")
     pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
@@ -89,10 +90,21 @@ def find_browser() -> Path | None:
         rf"{pf86}\Google\Chrome\Application\chrome.exe",
         rf"{local}\Google\Chrome\Application\chrome.exe" if local else None,
     ]
+    out: list[Path] = []
+    seen: set[str] = set()
     for path in candidates:
         if path and Path(path).exists():
-            return Path(path)
-    return None
+            key = os.path.normcase(str(Path(path)))
+            if key not in seen:
+                seen.add(key)
+                out.append(Path(path))
+    return out
+
+
+def find_browser() -> Path | None:
+    """Ο προτιμώμενος browser (Edge, αλλιώς Chrome), ή None."""
+    browsers = find_browsers()
+    return browsers[0] if browsers else None
 
 
 def available() -> bool:

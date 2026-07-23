@@ -50,6 +50,19 @@ _POLL_MS = 1500
 
 _COL_STATUS, _COL_DATE, _COL_PARTY, _COL_HOST, _COL_ERR = range(5)
 _MARK_ROLE = Qt.ItemDataRole.UserRole + 1
+_SORT_ROLE = Qt.ItemDataRole.UserRole + 2
+
+
+class _SortItem(QTableWidgetItem):
+    """Κελί που ταξινομείται με βάση κρυφό κλειδί (π.χ. ISO ημερομηνία) αντί για
+    το εμφανιζόμενο κείμενο (dd/mm/yyyy), ώστε η ταξινόμηση να είναι σωστή."""
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:  # noqa: D401 - Qt override
+        a = self.data(_SORT_ROLE)
+        b = other.data(_SORT_ROLE)
+        if a is not None and b is not None:
+            return a < b
+        return super().__lt__(other)
 
 
 def _downloads_dir() -> Path:
@@ -98,7 +111,7 @@ class OnlineOnlyDialog(QDialog):
         self.setWindowTitle("Λήψη μόνο-online μέσω του browser σας")
         self.setMinimumSize(720, 480)
         self._build()
-        self._refresh()
+        self._populate()
 
         self._timer = QTimer(self)
         self._timer.setInterval(_POLL_MS)
@@ -111,12 +124,14 @@ class OnlineOnlyDialog(QDialog):
 
         intro = QLabel(
             "Αυτά τα παραστατικά ο πάροχος τα δείχνει <b>μόνο online</b>, συχνά "
-            "πίσω από έλεγχο «είστε άνθρωπος». Πατήστε <b>«Άνοιγμα επόμενου»</b>: "
-            "ανοίγει στον browser σας, όπου το αποθηκεύετε ως PDF "
+            "πίσω από έλεγχο «είστε άνθρωπος». Διαλέξτε μια γραμμή και πατήστε "
+            "<b>«Άνοιγμα»</b> (αλλιώς ανοίγει το επόμενο σε σειρά): ανοίγει στον "
+            "browser σας, όπου το αποθηκεύετε ως PDF "
             "(Ctrl+P → «Αποθήκευση ως PDF», ή το κουμπί του παρόχου) και η "
             "εφαρμογή το αρχειοθετεί <b>μόνη της</b>.<br>"
-            "Αν κάτι δεν ανοίγει ή δεν υπάρχει PDF: <b>«Παράκαμψη»</b> για να "
-            "προχωρήσετε, ή τσεκάρετε <b>«Σφάλμα»</b> στη γραμμή του."
+            "Κάντε κλικ σε μια επικεφαλίδα στήλης για <b>ταξινόμηση</b>· η σειρά "
+            "επεξεργασίας ακολουθεί την ταξινόμηση. Αν κάτι δεν ανοίγει ή δεν "
+            "υπάρχει PDF: <b>«Παράκαμψη»</b>, ή τσεκάρετε <b>«Σφάλμα»</b> στη γραμμή."
         )
         intro.setWordWrap(True)
         root.addWidget(intro)
@@ -133,6 +148,10 @@ class OnlineOnlyDialog(QDialog):
         hh.setSectionResizeMode(_COL_PARTY, QHeaderView.ResizeMode.Stretch)
         for col in (_COL_STATUS, _COL_DATE, _COL_HOST, _COL_ERR):
             hh.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        # Ταξινόμηση με κλικ στην επικεφαλίδα· η σειρά επεξεργασίας ακολουθεί την
+        # οπτική σειρά του πίνακα (βλ. _open_next / _current).
+        self.table.setSortingEnabled(True)
+        hh.setSortIndicatorShown(True)
         self.table.itemChanged.connect(self._on_item_changed)
         root.addWidget(self.table, 1)
 
@@ -151,7 +170,11 @@ class OnlineOnlyDialog(QDialog):
         root.addWidget(self.lbl_status)
 
         buttons = QHBoxLayout()
-        self.btn_open = QPushButton("Άνοιγμα επόμενου στον browser")
+        self.btn_open = QPushButton("Άνοιγμα στον browser")
+        self.btn_open.setToolTip(
+            "Ανοίγει την επιλεγμένη γραμμή· αν δεν έχετε επιλέξει, το επόμενο σε "
+            "σειρά (με βάση την ταξινόμηση)."
+        )
         self.btn_open.clicked.connect(self._open_next)
         buttons.addWidget(self.btn_open)
 
@@ -191,12 +214,40 @@ class OnlineOnlyDialog(QDialog):
             return "▶ Ανοιχτό — αποθηκεύστε", QColor("#1565c0")
         return "⧗ Αναμονή", None
 
+    def _visual_marks(self) -> list[str]:
+        """Τα marks με τη σειρά που φαίνονται τώρα στον πίνακα (μετά ταξινόμηση)."""
+        out: list[str] = []
+        for i in range(self.table.rowCount()):
+            item = self.table.item(i, _COL_STATUS)
+            if item is not None:
+                out.append(item.data(_MARK_ROLE))
+        return out
+
+    def _is_pending(self, mark: str) -> bool:
+        return (
+            mark not in self._done and mark not in self._errors
+            and mark not in self._skipped
+        )
+
     def _current(self) -> sqlite3.Row | None:
-        """Το επόμενο που περιμένει δουλειά (πρώτο μη ολοκληρωμένο)."""
-        for row in self._rows:
-            m = row["mark"]
-            if m not in self._done and m not in self._errors and m not in self._skipped:
-                return row
+        """Το επόμενο που περιμένει δουλειά, με τη σειρά που ταξινόμησε ο χρήστης.
+
+        Ακολουθεί την οπτική σειρά του πίνακα ώστε η ταξινόμηση/επιλογή του χρήστη
+        να καθορίζει τη σειρά επεξεργασίας.
+        """
+        for mark in self._visual_marks():
+            if self._is_pending(mark):
+                return self._row_by_mark(mark)
+        return None
+
+    def _selected_pending_row(self) -> sqlite3.Row | None:
+        """Η επιλεγμένη γραμμή, αν ο χρήστης έχει επιλέξει μία που εκκρεμεί."""
+        items = self.table.selectedItems()
+        if not items:
+            return None
+        mark = items[0].data(_MARK_ROLE)
+        if mark and self._is_pending(mark):
+            return self._row_by_mark(mark)
         return None
 
     def _row_by_mark(self, mark: str) -> sqlite3.Row | None:
@@ -205,19 +256,26 @@ class OnlineOnlyDialog(QDialog):
                 return row
         return None
 
-    def _refresh(self) -> None:
+    def _populate(self) -> None:
+        """Αρχικό γέμισμα του πίνακα (μία φορά), με ταξινόμηση απενεργοποιημένη
+        ώστε να κρατηθεί η αρχική σειρά (κατά ημερομηνία)."""
         self._loading = True
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(self._rows))
         for i, row in enumerate(self._rows):
             mark = row["mark"]
             text, color = self._state(mark)
 
-            status = QTableWidgetItem(text)
+            status = _SortItem(text)
             status.setData(_MARK_ROLE, mark)
+            status.setData(_SORT_ROLE, text)
             if color:
                 status.setForeground(color)
             self.table.setItem(i, _COL_STATUS, status)
-            self.table.setItem(i, _COL_DATE, QTableWidgetItem(_gr_date(row["issue_date"])))
+
+            date = _SortItem(_gr_date(row["issue_date"]))
+            date.setData(_SORT_ROLE, row["issue_date"] or "")
+            self.table.setItem(i, _COL_DATE, date)
             self.table.setItem(i, _COL_PARTY, QTableWidgetItem(self._party(row)))
             self.table.setItem(i, _COL_HOST, QTableWidgetItem(row["provider_host"] or "—"))
 
@@ -232,18 +290,52 @@ class OnlineOnlyDialog(QDialog):
             err.setData(_MARK_ROLE, mark)
             err.setToolTip("Σήμανση ως σφάλμα (π.χ. δεν ανοίγει ή δεν υπάρχει PDF)")
             self.table.setItem(i, _COL_ERR, err)
+        self.table.setSortingEnabled(True)
+        self._loading = False
+        self._update_status()
+        self._highlight_current()
+
+    def _refresh(self) -> None:
+        """Ενημερώνει κατάσταση/σήμανση **επί τόπου**, χωρίς να ξαναχτίζει τον
+        πίνακα — έτσι διατηρείται η ταξινόμηση/σειρά που επέλεξε ο χρήστης."""
+        if self.table.rowCount() != len(self._rows):
+            self._populate()
+            return
+        self._loading = True
+        for i in range(self.table.rowCount()):
+            status = self.table.item(i, _COL_STATUS)
+            if status is None:
+                continue
+            mark = status.data(_MARK_ROLE)
+            text, color = self._state(mark)
+            status.setText(text)
+            status.setData(_SORT_ROLE, text)
+            status.setForeground(color if color else QColor())
+            err = self.table.item(i, _COL_ERR)
+            if err is not None:
+                want = (
+                    Qt.CheckState.Checked if mark in self._errors
+                    else Qt.CheckState.Unchecked
+                )
+                if err.checkState() != want:
+                    err.setCheckState(want)
         self._loading = False
         self._update_status()
         self._highlight_current()
 
     def _highlight_current(self) -> None:
+        # Μη «κλέβεις» την επιλογή του χρήστη: αν έχει επιλέξει μια γραμμή που
+        # εκκρεμεί, σεβόμαστε την επιλογή του (θα ανοίξει αυτή).
+        if self._selected_pending_row() is not None and self._watch_mark is None:
+            return
         target = self._watch_mark or (self._current()["mark"] if self._current() else None)
         if not target:
             return
-        for i, row in enumerate(self._rows):
-            if row["mark"] == target:
+        for i in range(self.table.rowCount()):
+            item = self.table.item(i, _COL_STATUS)
+            if item is not None and item.data(_MARK_ROLE) == target:
                 self.table.selectRow(i)
-                self.table.scrollToItem(self.table.item(i, _COL_STATUS))
+                self.table.scrollToItem(item)
                 break
 
     def _update_folder_label(self) -> None:
@@ -272,7 +364,9 @@ class OnlineOnlyDialog(QDialog):
             self._update_folder_label()
 
     def _open_next(self) -> None:
-        row = self._current()
+        # Αν ο χρήστης έχει επιλέξει μια γραμμή που εκκρεμεί, ανοίγουμε αυτή·
+        # αλλιώς το επόμενο σε σειρά (με βάση την ταξινόμηση του πίνακα).
+        row = self._selected_pending_row() or self._current()
         if row is None:
             self._timer.stop()
             self._watch_mark = None
@@ -296,7 +390,10 @@ class OnlineOnlyDialog(QDialog):
         self._refresh()
 
     def _skip_current(self) -> None:
-        row = self._row_by_mark(self._watch_mark) if self._watch_mark else self._current()
+        if self._watch_mark:
+            row = self._row_by_mark(self._watch_mark)
+        else:
+            row = self._selected_pending_row() or self._current()
         if row is None:
             return
         self._timer.stop()

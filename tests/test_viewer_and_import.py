@@ -243,6 +243,94 @@ def test_download_viewer_only_saves_renderable_keeps_rest(conn, tmp_path, monkey
     assert rows["M_bad"]["local_path"] == ""
 
 
+def test_viewer_browser_fallback_tries_next(conn, tmp_path, monkeypatch):
+    """Αν ο πρώτος browser (Edge) δεν ανοίγει, δοκιμάζεται ο επόμενος (Chrome)."""
+    from pathlib import Path as P
+
+    from timologio import sync
+    from timologio.config import Settings
+    from timologio.download import headless
+    from timologio.download.provider import NotAPdf
+
+    def _no_direct(self, url):
+        raise NotAPdf("html")
+    monkeypatch.setattr(
+        "timologio.download.provider.ProviderDownloader.fetch_pdf", _no_direct)
+
+    cid = _add_doc(conn, "M1", "viewer_only")
+    conn.execute(
+        "UPDATE documents SET downloading_invoice_url='https://prov/x',"
+        "issuer_vat='111',series='A',aa='1',issue_date='2026-01-01' WHERE mark='M1'")
+    conn.commit()
+
+    edge = P("C:/edge/msedge.exe")
+    chrome = P("C:/chrome/chrome.exe")
+    monkeypatch.setattr(headless, "find_browsers", lambda: [edge, chrome])
+    monkeypatch.setattr(headless, "find_browser", lambda: edge)
+
+    tried: list[P] = []
+
+    class FakeRenderer:
+        def __init__(self, browser=None, **k):
+            tried.append(browser)
+            if browser == edge:
+                raise headless.HeadlessError("Edge δεν άνοιξε")
+            self.browser = browser
+
+        def render_pdf(self, url, **k):
+            return b"%PDF-1.4\nok\n%%EOF"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(headless, "HeadlessRenderer", FakeRenderer)
+
+    settings = Settings(data_dir=tmp_path)
+    saved, skipped, failed = sync.download_viewer_only(
+        conn, settings, headed_fallback=False)
+    assert (saved, failed) == (1, 0)
+    assert tried == [edge, chrome]  # δοκίμασε Edge, μετά Chrome
+    got = {r["mark"]: r["status"] for r in conn.execute("SELECT mark,status FROM documents")}
+    assert got["M1"] == "downloaded"
+
+
+def test_viewer_all_browsers_fail_marks_remaining(conn, tmp_path, monkeypatch):
+    """Αν κανένας browser δεν ανοίγει, τα παραστατικά μένουν «μόνο online»."""
+    from pathlib import Path as P
+
+    from timologio import sync
+    from timologio.config import Settings
+    from timologio.download import headless
+    from timologio.download.provider import NotAPdf
+
+    def _no_direct(self, url):
+        raise NotAPdf("html")
+    monkeypatch.setattr(
+        "timologio.download.provider.ProviderDownloader.fetch_pdf", _no_direct)
+
+    cid = _add_doc(conn, "M1", "viewer_only")
+    conn.execute(
+        "UPDATE documents SET downloading_invoice_url='https://prov/x',"
+        "issuer_vat='111',series='A',aa='1',issue_date='2026-01-01' WHERE mark='M1'")
+    conn.commit()
+
+    edge = P("C:/edge/msedge.exe")
+    monkeypatch.setattr(headless, "find_browsers", lambda: [edge])
+    monkeypatch.setattr(headless, "find_browser", lambda: edge)
+
+    class DeadRenderer:
+        def __init__(self, browser=None, **k):
+            raise headless.HeadlessError("δεν άνοιξε")
+    monkeypatch.setattr(headless, "HeadlessRenderer", DeadRenderer)
+
+    settings = Settings(data_dir=tmp_path)
+    saved, skipped, failed = sync.download_viewer_only(
+        conn, settings, headed_fallback=False)
+    assert saved == 0
+    got = {r["mark"]: r["status"] for r in conn.execute("SELECT mark,status FROM documents")}
+    assert got["M1"] == "viewer_only"
+
+
 def test_direct_fetch_recovers_provider_with_pdf(conn, tmp_path, monkeypatch):
     """Πέρασμα 0: πάροχος με άμεσο PDF (π.χ. Megasoft) κατεβαίνει ΧΩΡΙΣ browser."""
     from timologio import sync
