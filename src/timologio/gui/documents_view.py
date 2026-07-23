@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import subprocess
+import unicodedata
 from datetime import date
 from pathlib import Path
 
@@ -39,6 +40,16 @@ from ..reports import (
 from .icons import icon
 from .theme import CURRENT, money
 from .widgets import GrDateEdit, resort, setup_columns
+
+def _gr_upper(text: str) -> str:
+    """Κεφαλαία ελληνικά χωρίς τόνους — όπως γράφονται τα ονόματα σε κεφαλαία
+    (π.χ. «Λουγαρής Σπύρος» → «ΛΟΥΓΑΡΗΣ ΣΠΥΡΟΣ»). Για καθαρό όνομα αρχείου."""
+    upper = text.upper()
+    return "".join(
+        c for c in unicodedata.normalize("NFD", upper)
+        if unicodedata.category(c) != "Mn"
+    )
+
 
 #: (επικεφαλίδα, πλάτος, tooltip). 0 = Stretch.
 _COLS: list[tuple[str, int, str]] = [
@@ -672,7 +683,11 @@ class DocumentsView(QWidget):
             return
 
         safe = "".join(c for c in self._label if c.isalnum() or c in " -_")[:40].strip()
-        default = self._settings.data_dir / f"{self._vat} {safe}.zip".strip()
+        # Προτεινόμενο όνομα: «<ΑΦΜ> <ΕΠΩΝΥΜΙΑ> ΠΑΡΑΣΤΑΤΙΚΑ.zip» — ολόκληρο με
+        # κεφαλαία ελληνικά (χωρίς τόνους, όπως γράφονται τα ονόματα σε κεφαλαία),
+        # όπως τα ονομάζει ο λογιστής.
+        name = " ".join(p for p in (self._vat, _gr_upper(safe), "ΠΑΡΑΣΤΑΤΙΚΑ") if p)
+        default = self._settings.data_dir / f"{name}.zip"
         path, _ = QFileDialog.getSaveFileName(
             self, f"Εξαγωγή {len(packable)} αρχείων σε ZIP", str(default), "ZIP (*.zip)"
         )

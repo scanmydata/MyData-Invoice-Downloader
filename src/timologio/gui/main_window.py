@@ -978,6 +978,31 @@ class MainWindow(QMainWindow):
         self._panel_anim = animation
         animation.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
 
+    def _go_sync(self) -> None:
+        """Πηγαίνει στη σελίδα λήψης φέρνοντας τον ενεργό (καρφιτσωμένο) πελάτη
+        αυτόματα **επιλεγμένο και τσεκαρισμένο** — ώστε να μη χρειάζεται να τον
+        ξαναδιαλέξει ο χρήστης. Δεν αγγίζει τυχόν άλλες υπάρχουσες επιλογές."""
+        if self._pinned_vat:
+            self._select_and_check_vat(self._pinned_vat)
+        self._show_page("sync")
+
+    def _select_and_check_vat(self, vat: str) -> None:
+        """Επιλέγει (φωτίζει) και τσεκάρει τη γραμμή του πελάτη, αν είναι
+        διαθέσιμος (έχει κλειδί). Ανενεργοί/χωρίς κλειδί δεν κατεβαίνουν."""
+        for i in range(self.table.rowCount()):
+            vit = self.table.item(i, _COL_VAT)
+            sit = self.table.item(i, _COL_STATUS)
+            if not vit or vit.text() != vat:
+                continue
+            if sit is None or sit.text() != _STATUS_READY:
+                return
+            self.table.selectRow(i)
+            check = self.table.item(i, _COL_CHECK)
+            if check is not None and check.checkState() is not Qt.CheckState.Checked:
+                # Το setCheckState πυροδοτεί _on_item_changed → μπαίνει στα _checked.
+                check.setCheckState(Qt.CheckState.Checked)
+            return
+
     # ---------------------------------------------------------- πλοήγηση
     def _show_page(self, name: str) -> None:
         self.stack.setCurrentIndex(_PAGES.index(name))
@@ -1022,7 +1047,7 @@ class MainWindow(QMainWindow):
     def _on_menu(self, action: str) -> None:
         handlers = {
             "clients": lambda: self._show_page("clients"),
-            "sync": lambda: self._show_page("sync"),
+            "sync": self._go_sync,
             "documents": self._open_documents,
             "add_client": self.on_add_client,
             "import": self.on_import,
@@ -1566,9 +1591,10 @@ class MainWindow(QMainWindow):
             "σας, τα αποθηκεύετε ως PDF και η εφαρμογή τα αρχειοθετεί μόνη της. "
             "Δουλεύει και για παρόχους πίσω από έλεγχο «είστε άνθρωπος» "
             "(π.χ. Epsilon, Megasoft).<br><br>"
-            "<b>Αυτόματα</b>: πρώτα αόρατος browser (γρήγορα, παράλληλα)· για όσα "
-            "κρύβονται πίσω από έλεγχο «είστε άνθρωπος» ανοίγουν <b>ορατά "
-            "παράθυρα</b> για να περάσετε εσείς τον έλεγχο, και μετά αποθηκεύονται."
+            "<b>Αυτόματα</b>: μόνο με <b>αόρατο</b> browser (γρήγορα, παράλληλα) — "
+            "<b>δεν ανοίγει κανένα παράθυρο</b>. Πιάνει όσα δεν έχουν έλεγχο "
+            "«είστε άνθρωπος»· όσα κρύβονται πίσω από τέτοιον έλεγχο μένουν «μόνο "
+            "online» και τα κατεβάζετε με το «Μέσω του browser μου»."
         )
         btn_browser = box.addButton("Μέσω του browser μου", QMessageBox.ButtonRole.AcceptRole)
         btn_auto = box.addButton("Αυτόματα", QMessageBox.ButtonRole.ActionRole)
@@ -1606,7 +1632,9 @@ class MainWindow(QMainWindow):
         self._hl_dialog.setValue(0)
 
         self._hl_thread = QThread(self)
-        self._hl_worker = HeadlessWorker(vats)
+        # Αυτόματα = μόνο αόρατος browser. Δεν ανοίγουμε ορατά παράθυρα από μόνοι
+        # μας — τα Cloudflare-gated τα κατεβάζει ο χρήστης με «Μέσω του browser μου».
+        self._hl_worker = HeadlessWorker(vats, headed_fallback=False)
         self._hl_worker.moveToThread(self._hl_thread)
         self._hl_thread.started.connect(self._hl_worker.run)
         self._hl_worker.message.connect(self._on_headless_message)
@@ -1776,11 +1804,16 @@ class MainWindow(QMainWindow):
             Step(
                 "5. Η λήψη",
                 "Διαλέξτε περίοδο, αν θέλετε έσοδα, έξοδα ή και τα δύο, και "
-                "ποιοι πελάτες θα κατέβουν.\n\n"
+                "ποιοι πελάτες θα κατέβουν. Ο ενεργός πελάτης έρχεται εδώ "
+                "αυτόματα επιλεγμένος και τσεκαρισμένος.\n\n"
                 "Η εφαρμογή ζητά μόνο ό,τι είναι νεότερο από την προηγούμενη "
-                "φορά, οπότε η δεύτερη λήψη είναι σχεδόν ακαριαία.",
+                "φορά, οπότε η δεύτερη λήψη είναι σχεδόν ακαριαία.\n\n"
+                "Για παραστατικά που ο πάροχος δείχνει «μόνο online», το «Λήψη "
+                "μόνο-online» δίνει δύο τρόπους: «Αυτόματα» (αόρατα, χωρίς να "
+                "ανοίγει παράθυρο) και «Μέσω του browser σας» (οδηγός για όσα "
+                "ζητούν έλεγχο «είστε άνθρωπος»).",
                 lambda: self.sync_page,
-                lambda: self._show_page("sync"),
+                self._go_sync,
             ),
             Step(
                 "6. Τα παραστατικά",
@@ -1796,12 +1829,25 @@ class MainWindow(QMainWindow):
                 lambda: self.menu.button("documents"),
             ),
             Step(
+                "7. Πίνακας ελέγχου",
+                "ΣΥΣΤΗΜΑ → «Πίνακας ελέγχου»: δείχνει τον ρόλο του υπολογιστή, "
+                "τον φάκελο δεδομένων, το μέγεθος της βάσης και ποιος κατεβάζει "
+                "τώρα.\n\n"
+                "Ο πίνακας «Συνδέσεις» δείχνει κάθε υπολογιστή που μοιράζεται την "
+                "ίδια βάση (πράσινο = ενεργός τώρα). Το «Έλεγχος σύνδεσης» "
+                "επιβεβαιώνει φάκελο, δικαιώματα και βάση, και λέει τι φταίει.",
+                lambda: self.menu.button("control"),
+                lambda: self._show_page("control"),
+            ),
+            Step(
                 "Ασφάλεια και βοήθεια",
                 "Πριν από κάθε επικίνδυνη ενέργεια κρατιέται αντίγραφο της "
                 "βάσης, οπότε η «Επαναφορά» σας γυρίζει πίσω.\n\n"
-                "Η «Εκκαθάριση» σβήνει τα ληφθέντα· μέσα στο ίδιο παράθυρο "
-                "μπορείτε προαιρετικά να διαγράψετε και τα αρχεία από τον δίσκο "
-                "αλλά και τους ίδιους τους πελάτες (μαζική διαγραφή).\n\n"
+                "Η «Εκκαθάριση» μηδενίζει το ιστορικό λήψης ώστε η επόμενη λήψη "
+                "να τα ξαναφέρει όλα· μέσα στο ίδιο παράθυρο μπορείτε προαιρετικά "
+                "να διαγράψετε και τα αρχεία PDF/XML από τον δίσκο, αλλά και τους "
+                "ίδιους τους πελάτες (μαζική διαγραφή). Χωρίς επιλογή αφορά όλους· "
+                "με επιλεγμένους, μόνο αυτούς.\n\n"
                 "Το «Εγχειρίδιο PDF» τα εξηγεί όλα αναλυτικά. Καλή δουλειά!",
                 lambda: self.menu,
             ),

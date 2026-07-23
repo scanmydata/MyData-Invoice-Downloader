@@ -18,10 +18,16 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import QRect, QSize, Qt
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtGui import QAction, QImage, QKeySequence, QPainter
 from PySide6.QtPdf import QPdfDocument
-from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrintPreviewWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QToolBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 log = logging.getLogger(__name__)
 
@@ -73,10 +79,14 @@ def print_pdfs(paths: list[Path], parent: QWidget | None = None) -> tuple[int, i
     cache: dict[tuple[int, int], QImage] = {}
 
     def render(printer: QPrinter) -> None:
+        # Ο δείκτης αναμονής μπαίνει/βγαίνει ΜΕΣΑ στο render (ισοσκελισμένο), ώστε
+        # να μη μένει ποτέ κολλημένος: παλιά τον βάζαμε γύρω από το exec() του
+        # modal, οπότε έμενε «loading» σε όλη τη διάρκεια της προεπισκόπησης.
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         painter = QPainter()
-        if not painter.begin(printer):
-            return
         try:
+            if not painter.begin(printer):
+                return
             first = True
             for doc, page in pages:
                 if not first:
@@ -84,20 +94,65 @@ def print_pdfs(paths: list[Path], parent: QWidget | None = None) -> tuple[int, i
                 first = False
                 _draw_page(painter, printer, doc, page, cache)
         finally:
-            painter.end()
+            if painter.isActive():
+                painter.end()
+            QApplication.restoreOverrideCursor()
 
     printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-    dialog = QPrintPreviewDialog(printer, parent)
+
+    # Δικό μας παράθυρο προεπισκόπησης: το built-in QPrintPreviewDialog έβγαζε
+    # κενό dropdown ζουμ, χωρίς hints και χωρίς ξεκάθαρο κουμπί εκτύπωσης. Εδώ
+    # ελέγχουμε πλήρως τη γραμμή εργαλείων (κουμπί «Εκτύπωση», ζουμ, tooltips).
+    dialog = QDialog(parent)
     dialog.setWindowTitle("Προεπισκόπηση εκτύπωσης")
+    dialog.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+
+    preview = QPrintPreviewWidget(printer, dialog)
+    preview.paintRequested.connect(render)
+
+    toolbar = QToolBar(dialog)
+    toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+
+    def add(text: str, tip: str, slot, shortcut=None) -> QAction:
+        act = QAction(text, dialog)
+        act.setToolTip(tip)
+        act.setStatusTip(tip)
+        if shortcut is not None:
+            act.setShortcut(shortcut)
+        act.triggered.connect(slot)
+        toolbar.addAction(act)
+        return act
+
+    def do_print() -> None:
+        pdlg = QPrintDialog(printer, dialog)
+        pdlg.setWindowTitle("Εκτύπωση")
+        if pdlg.exec() == QDialog.DialogCode.Accepted:
+            preview.print_()  # -> paintRequested(printer) -> render()
+            dialog.accept()
+
+    add("🖨  Εκτύπωση…", "Επιλογή εκτυπωτή και εκτύπωση όλων των σελίδων",
+        do_print, QKeySequence.StandardKey.Print)
+    toolbar.addSeparator()
+    add("Μεγέθυνση", "Μεγέθυνση της προεπισκόπησης", preview.zoomIn,
+        QKeySequence.StandardKey.ZoomIn)
+    add("Σμίκρυνση", "Σμίκρυνση της προεπισκόπησης", preview.zoomOut,
+        QKeySequence.StandardKey.ZoomOut)
+    add("Πλάτος", "Προσαρμογή στο πλάτος της σελίδας", preview.fitToWidth)
+    add("Σελίδα", "Ολόκληρη η σελίδα στην οθόνη", preview.fitInView)
+    toolbar.addSeparator()
+    add("Κλείσιμο", "Κλείσιμο της προεπισκόπησης", dialog.reject,
+        QKeySequence.StandardKey.Close)
+
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    layout.addWidget(toolbar)
+    layout.addWidget(preview, 1)
     if parent is not None:
         dialog.resize(parent.size())
-    dialog.paintRequested.connect(render)
-    # Το πρώτο render όλων των σελίδων μπορεί να αργήσει — δείχνουμε αναμονή.
-    QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
     try:
         dialog.exec()
     finally:
-        QApplication.restoreOverrideCursor()
         for doc in docs:
             doc.close()
     return len(docs), failed
