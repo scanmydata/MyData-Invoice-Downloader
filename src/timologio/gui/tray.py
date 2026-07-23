@@ -48,15 +48,16 @@ class Tray(QSystemTrayIcon):
             self.show_window()
 
     def show_window(self) -> None:
+        # Ίδια διαδρομή με το single-instance: ξεμαζεύει, φέρνει μπροστά και
+        # δείχνει τυχόν εκκρεμή ξενάγηση (idempotent — δεν κάνει τίποτα αν έχει
+        # ήδη ιδωθεί).
+        bring = getattr(self._window, "bring_to_front", None)
+        if callable(bring):
+            bring()
+            return
         self._window.showNormal()
         self._window.raise_()
         self._window.activateWindow()
-        # Πρώτο άνοιγμα από το tray μετά από νέα εγκατάσταση με «εκκίνηση στο
-        # tray»: εδώ δείχνεται η ξενάγηση που δεν μπόρεσε να ξεκινήσει όσο το
-        # παράθυρο ήταν κρυμμένο. Idempotent — δεν κάνει τίποτα αν έχει ιδωθεί.
-        notify = getattr(self._window, "notify_shown", None)
-        if callable(notify):
-            notify()
 
     def quit_app(self) -> None:
         setattr(self._window, "_really_quit", True)

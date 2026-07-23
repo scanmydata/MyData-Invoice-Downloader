@@ -7,7 +7,7 @@
 ; Build:  "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\timologio.iss
 
 #define AppName        "Timologio Downloader"
-#define AppVersion     "0.2.16"
+#define AppVersion     "0.2.17"
 #define AppPublisher   "scanmydata"
 #define AppExeName     "TimologioDownloader.exe"
 
@@ -119,7 +119,11 @@ Name: "{code:GetDataDir}\data"; Flags: uninsneveruninstall; Check: ShouldCreateD
 Name: "{code:GetDataDir}\backups"; Flags: uninsneveruninstall; Check: ShouldCreateDataDirs
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "Εκκίνηση {#AppName}"; \
+; --show: ακόμη κι αν επιλέχθηκε «εκκίνηση στο tray», η ΠΡΩΤΗ εμφάνιση μετά την
+; εγκατάσταση γίνεται κανονικά — ο χρήστης μόλις εγκατέστησε και πρέπει να δει
+; το πρόγραμμα, όχι να «εξαφανιστεί» στο tray. Από την επόμενη εκκίνηση ισχύει
+; η ρύθμιση.
+Filename: "{app}\{#AppExeName}"; Parameters: "--show"; Description: "Εκκίνηση {#AppName}"; \
     Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]

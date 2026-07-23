@@ -79,3 +79,12 @@ def test_autostart_is_per_user(script: str):
     """HKLM θα απαιτούσε δικαιώματα διαχειριστή και UAC."""
     assert "Root: HKCU; Subkey: \"Software\\Microsoft\\Windows\\CurrentVersion\\Run\"" in script
     assert "Check: WantsAutostart" in script
+
+
+def test_postinstall_launch_forces_show(script: str):
+    """Μετά την εγκατάσταση τρέχουμε με --show, ώστε η πρώτη εμφάνιση να μη
+    μαζεύεται στο tray ακόμη κι αν έχει επιλεγεί «εκκίνηση στο tray»."""
+    start = script.index("[Run]")
+    body = script[start:]
+    assert 'Parameters: "--show"' in body
+    assert "postinstall" in body

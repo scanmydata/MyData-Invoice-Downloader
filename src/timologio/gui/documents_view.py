@@ -214,7 +214,7 @@ class DocumentsView(QWidget):
         self.btn_zip.setIcon(icon("backup", CURRENT.muted))
         self.btn_zip.setToolTip(
             "Πακετάρει τα αρχεία των επιλεγμένων παραστατικών σε ένα ZIP.\n"
-            "Χωρίς επιλογή, μπαίνουν όσα δείχνει η τρέχουσα προβολή."
+            "Τσεκάρετε πρώτα τα παραστατικά (ή «Επιλογή όλων»)."
         )
         self.btn_zip.clicked.connect(self._export_zip)
         bar.addWidget(self.btn_zip)
@@ -223,7 +223,7 @@ class DocumentsView(QWidget):
         self.btn_print.setIcon(icon("pdf", CURRENT.muted))
         self.btn_print.setToolTip(
             "Τυπώνει με μία εργασία τα PDF των επιλεγμένων παραστατικών.\n"
-            "Χωρίς επιλογή, τυπώνονται όσα δείχνει η τρέχουσα προβολή.\n"
+            "Τσεκάρετε πρώτα τα παραστατικά (ή «Επιλογή όλων»).\n"
             "Μόνο όσα έχουν κατεβασμένο PDF μπαίνουν στην εκτύπωση."
         )
         self.btn_print.clicked.connect(self._print_selected)
@@ -646,9 +646,14 @@ class DocumentsView(QWidget):
         return documents_by_marks(self._conn, self._vat, sorted(self._checked))
 
     def _export_zip(self) -> None:
-        rows = self._selected_rows() or getattr(self, "_shown", [])
+        rows = self._selected_rows()
         if not rows:
-            QMessageBox.information(self, "Εξαγωγή", "Δεν υπάρχουν παραστατικά.")
+            QMessageBox.information(
+                self, "Εξαγωγή σε ZIP",
+                "Δεν έχετε επιλέξει παραστατικά.\n\n"
+                "Τσεκάρετε τα παραστατικά που θέλετε στο ZIP "
+                "(ή πατήστε «Επιλογή όλων»).",
+            )
             return
 
         # Για όσα δεν έχει δώσει PDF ο πάροχος υπάρχει το XML της ΑΑΔΕ. Άλλοι το
@@ -705,12 +710,17 @@ class DocumentsView(QWidget):
         )
 
     def _print_selected(self) -> None:
-        """Μαζική εκτύπωση των PDF των επιλεγμένων (ή, χωρίς επιλογή, όσων
-        δείχνει η προβολή). Τυπώνονται μόνο όσα έχουν κατεβασμένο PDF — το XML
-        της ΑΑΔΕ δεν έχει νόημα στον εκτυπωτή."""
-        rows = self._selected_rows() or getattr(self, "_shown", [])
+        """Μαζική εκτύπωση των PDF των επιλεγμένων παραστατικών. Τυπώνονται μόνο
+        όσα έχουν κατεβασμένο PDF — το XML της ΑΑΔΕ δεν έχει νόημα στον
+        εκτυπωτή."""
+        rows = self._selected_rows()
         if not rows:
-            QMessageBox.information(self, "Εκτύπωση", "Δεν υπάρχουν παραστατικά.")
+            QMessageBox.information(
+                self, "Μαζική εκτύπωση",
+                "Δεν έχετε επιλέξει παραστατικά.\n\n"
+                "Τσεκάρετε τα παραστατικά που θέλετε να τυπώσετε "
+                "(ή πατήστε «Επιλογή όλων»).",
+            )
             return
 
         paths: list[Path] = []

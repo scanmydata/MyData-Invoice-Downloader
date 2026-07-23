@@ -116,8 +116,12 @@ _PANEL_W = 440
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, *, force_show: bool = False) -> None:
         super().__init__()
+        # Μετά την εγκατάσταση ο installer μας τρέχει με --show: ακόμη κι αν έχει
+        # επιλεγεί «εκκίνηση στο tray», η ΠΡΩΤΗ αυτή εμφάνιση γίνεται κανονικά,
+        # ώστε ο χρήστης να δει το πρόγραμμα αντί να «εξαφανιστεί» στο tray.
+        self._force_show = force_show
         self.setWindowTitle("Λήψη Παραστατικών myDATA")
         self.resize(1340, 840)
         # Κάτω από αυτό, ο πίνακας πελατών (9 στήλες) και η ανάλυση δεν χωρούν
@@ -274,7 +278,10 @@ class MainWindow(QMainWindow):
         self._really_quit = False
         self._tray_notified = False
         self._tour_pending = False
-        if load_start_minimized():
+        # Στην πρώτη εμφάνιση μετά την εγκατάσταση (--show) δεν μαζευόμαστε στο
+        # tray, ακόμη κι αν έτσι έχει ρυθμιστεί: ο χρήστης μόλις εγκατέστησε και
+        # πρέπει να δει το πρόγραμμα. Από την επόμενη εκκίνηση ισχύει η ρύθμιση.
+        if load_start_minimized() and not self._force_show:
             # Το hide() πρέπει να γίνει αφού το Qt δείξει το παράθυρο, αλλιώς σε
             # κάποια συστήματα εμφανίζεται μια στιγμή και μετά εξαφανίζεται.
             QTimer.singleShot(0, self.hide)
@@ -1938,6 +1945,18 @@ class MainWindow(QMainWindow):
             self._tour_pending = True
             return
         self.start_tour()
+
+    def bring_to_front(self) -> None:
+        """Φέρνει το παράθυρο μπροστά: από το tray ή όταν ο χρήστης προσπαθεί να
+        ανοίξει δεύτερο αντίγραφο από τη συντόμευση (single instance).
+
+        Το ``showNormal`` ξεμαζεύει τυχόν minimized/hidden παράθυρο· το
+        ``activateWindow`` του δίνει την εστίαση πάνω από τα υπόλοιπα.
+        """
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.notify_shown()
 
     def notify_shown(self) -> None:
         """Το παράθυρο μόλις έγινε ορατό από το tray — δείξε εκκρεμή ξενάγηση.

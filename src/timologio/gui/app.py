@@ -8,16 +8,76 @@ import sys
 from pathlib import Path
 
 from PySide6.QtGui import QIcon
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
 from ..crypto import SecretRedactingFilter
 from . import i18n
+
+log = logging.getLogger(__name__)
 
 #: Δικό μας AppUserModelID. Χωρίς αυτό, τα Windows ομαδοποιούν το παράθυρο κάτω
 #: από τον host (python.exe) και δείχνουν ΤΟ ΔΙΚΟ ΤΟΥ εικονίδιο στη γραμμή
 #: εργασιών — γι' αυτό το λογότυπο «δεν εμφανιζόταν». Δηλώνοντας δική μας
 #: ταυτότητα, τα Windows χρησιμοποιούν το εικονίδιο του παραθύρου παντού.
 _APP_ID = "scanmydata.TimologioDownloader"
+
+
+def _instance_key() -> str:
+    """Μοναδικό όνομα socket ανά χρήστη-λογαριασμό.
+
+    Δύο αντίγραφα στον ίδιο λογαριασμό μοιράζονται την ίδια βάση — μόνο ένα
+    πρέπει να τρέχει. Το username στο κλειδί αφήνει διαφορετικούς χρήστες του
+    ίδιου μηχανήματος (fast user switching) να τρέχουν ο καθένας το δικό του.
+    """
+    user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+    return f"scanmydata.TimologioDownloader.{user}"
+
+
+def _activate_running_instance() -> bool:
+    """Αν τρέχει ήδη αντίγραφο, του ζητά να έρθει μπροστά.
+
+    Επιστρέφει ``True`` αν βρέθηκε (οπότε ΑΥΤΟ το αντίγραφο πρέπει να βγει χωρίς
+    να ανοίξει δεύτερο παράθυρο). Δουλεύει και όταν το άλλο αντίγραφο είναι
+    μαζεμένο στο tray: του στέλνει «show» και εκείνο ξεμαζεύεται.
+    """
+    socket = QLocalSocket()
+    socket.connectToServer(_instance_key())
+    if not socket.waitForConnected(400):
+        return False
+    socket.write(b"show")
+    socket.flush()
+    socket.waitForBytesWritten(400)
+    socket.disconnectFromServer()
+    return True
+
+
+def _install_instance_guard(window) -> QLocalServer | None:
+    """Στήνει τον φρουρό μοναδικού instance και επιστρέφει τον server.
+
+    Όσο ζει, κάθε νέο αντίγραφο που ξεκινά συνδέεται εδώ και φέρνει μπροστά το
+    υπάρχον παράθυρο. Κρατήστε αναφορά στον server ώστε να μην τον μαζέψει ο
+    garbage collector.
+    """
+    server = QLocalServer()
+    # Καθάρισε τυχόν ορφανό socket από προηγούμενο crash — αλλιώς το listen
+    # αποτυγχάνει με «address in use» και ο φρουρός δεν στήνεται ποτέ.
+    QLocalServer.removeServer(_instance_key())
+    if not server.listen(_instance_key()):
+        log.warning("Ο φρουρός μοναδικού instance δεν στήθηκε: %s",
+                    server.errorString())
+        return None
+
+    def _on_second_instance() -> None:
+        conn = server.nextPendingConnection()
+        if conn is not None:
+            # Άδειασε ό,τι στάλθηκε και κλείσε — μας ενδιαφέρει μόνο το γεγονός.
+            conn.readyRead.connect(conn.readAll)
+            conn.disconnected.connect(conn.deleteLater)
+        window.bring_to_front()
+
+    server.newConnection.connect(_on_second_instance)
+    return server
 
 
 def _set_app_user_model_id() -> None:
@@ -55,7 +115,12 @@ def main(argv: list[str] | None = None) -> int:
 
     _set_app_user_model_id()
 
-    app = QApplication(argv if argv is not None else sys.argv)
+    args = argv if argv is not None else sys.argv
+    # Ο installer μας τρέχει με --show στο τέλος της εγκατάστασης, ώστε η πρώτη
+    # εμφάνιση να γίνεται κανονικά (όχι μαζεμένη στο tray).
+    force_show = "--show" in args
+
+    app = QApplication(args)
     app.setApplicationName("Timologio Downloader")
     app.setOrganizationName("scanmydata")
     # Ελληνικά και για ό,τι γράφει το ίδιο το Qt (κουμπιά «Ναι/Άκυρο», μενού
@@ -69,6 +134,14 @@ def main(argv: list[str] | None = None) -> int:
     # τερματισμός γίνεται ρητά από το MainWindow.closeEvent.
     app.setQuitOnLastWindowClosed(False)
 
+    # Πριν από κάθε βαρύ βήμα (ξεκλείδωμα, άνοιγμα βάσης): αν τρέχει ήδη
+    # αντίγραφο, φέρ' το μπροστά και βγες σιωπηλά. Έτσι μια δεύτερη διπλή-κλικ
+    # στη συντόμευση ανοίγει το ήδη ανοιχτό (ή μαζεμένο στο tray) παράθυρο αντί
+    # για δεύτερο αντίγραφο.
+    if _activate_running_instance():
+        log.info("Τρέχει ήδη αντίγραφο — φέρνω μπροστά το υπάρχον παράθυρο.")
+        return 0
+
     # Το import γίνεται εδώ ώστε το QApplication να υπάρχει πριν από widgets.
     from ..config import load_settings
     from .main_window import MainWindow
@@ -80,10 +153,16 @@ def main(argv: list[str] | None = None) -> int:
     if not ask_unlock(load_settings().enckey_path):
         return 1
 
-    window = MainWindow()
+    window = MainWindow(force_show=force_show)
     # Ρητά και στο παράθυρο (όχι μόνο global): η γραμμή τίτλου και το alt-tab
     # διαβάζουν το εικονίδιο του παραθύρου, όχι πάντα το global του app.
     window.setWindowIcon(icon)
+    # Ο φρουρός μοναδικού instance μένει ζωντανός όσο ζει το παράθυρο· η αναφορά
+    # πάνω στο window τον προστατεύει από τον garbage collector.
+    window._single_instance_server = _install_instance_guard(window)  # noqa: SLF001
+    # Το show() γίνεται πάντα· αν έχει επιλεγεί «εκκίνηση στο tray» (και δεν
+    # είναι η πρώτη εμφάνιση μετά την εγκατάσταση), το MainWindow._setup_tray
+    # κρύβει αμέσως το παράθυρο.
     window.show()
     return app.exec()
 
