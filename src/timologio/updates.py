@@ -137,6 +137,10 @@ def build_updater_script(
     tray_flag = "/TRAY=1" if tray else "/TRAY=0"
     # Ο installer γράφει log δίπλα στο setup, ώστε μια αποτυχία να είναι ορατή.
     log_path = setup.with_name("timologio_update_inno.log")
+    # Δικό μας log του ΙΔΙΟΥ του script: χωρίς αυτό, όταν «η ενημέρωση δεν
+    # δουλεύει» δεν υπάρχει κανένα ίχνος για το πού κόλλησε. Τώρα κάθε βήμα
+    # καταγράφεται με ώρα, οπότε το πρόβλημα είναι πάντα ορατό.
+    run_log = setup.with_name("timologio_update_run.log")
     proc_name = app_exe.stem
     dir_arg = f"'/DIR={esc(install_dir)}'," if install_dir is not None else ""
     args = (
@@ -148,6 +152,10 @@ def build_updater_script(
     )
     return (
         "$ErrorActionPreference='SilentlyContinue'\n"
+        f"$log={q(run_log)}\n"
+        "function L($m){ (\"[{0}] {1}\" -f (Get-Date -Format 'HH:mm:ss'), $m) | "
+        "Out-File -FilePath $log -Append -Encoding utf8 }\n"
+        f"L ('start pid={int(pid)}')\n"
         # Περίμενε πρώτα τη συγκεκριμένη διεργασία που ζήτησε την ενημέρωση…
         f"Wait-Process -Id {int(pid)} -Timeout 60\n"
         # …και μετά κάθε τυχόν άλλη ανοιχτή instance (π.χ. server + τερματικό στο
@@ -157,15 +165,22 @@ def build_updater_script(
         f"-and (Get-Date) -lt $deadline) {{ Start-Sleep -Milliseconds 500 }}\n"
         # Δίχτυ ασφαλείας: αν κάποια instance επιμένει (π.χ. μαζεμένη στο tray),
         # την κλείνουμε με τη βία — αλλιώς τα αρχεία μένουν κλειδωμένα και ο
-        # installer αποτυγχάνει σιωπηλά. Τερματίζουμε ούτως ή άλλως — αυτός είναι
-        # ο σκοπός της ενημέρωσης.
+        # installer αποτυγχάνει σιωπηλά.
         f"Stop-Process -Name {q(proc_name)} -Force -ErrorAction SilentlyContinue\n"
+        "L 'instances stopped'\n"
         # ΚΡΙΣΙΜΟ: ο πυρήνας του Windows απελευθερώνει τα mapped DLL (Qt κ.λπ.) με
-        # μικρή καθυστέρηση ΜΕΤΑ τον τερματισμό. Χωρίς αυτή την αναμονή, ο
-        # installer έβρισκε κλειδωμένα αρχεία, δεν τα αντικαθιστούσε (σιωπηλά, λόγω
-        # /SUPPRESSMSGBOXES) και η αναβάθμιση «δεν έπιανε» — η εφαρμογή ξανάνοιγε
-        # στην παλιά έκδοση και ξαναπρότεινε ενημέρωση (ατέρμονος βρόχος).
-        "Start-Sleep -Seconds 3\n"
-        f"Start-Process -Wait -FilePath {q(setup)} -ArgumentList @({args})\n"
+        # καθυστέρηση ΜΕΤΑ τον τερματισμό. Αντί για σταθερό sleep, περιμένουμε
+        # ενεργά μέχρι το exe να ΞΕΚΛΕΙΔΩΣΕΙ (ανοίγει για αποκλειστική εγγραφή),
+        # ώστε ο installer να μη βρει κλειδωμένα αρχεία και αποτύχει σιωπηλά.
+        f"$exe={q(app_exe)}\n"
+        "$d2=(Get-Date).AddSeconds(25)\n"
+        "while ((Get-Date) -lt $d2) { try { "
+        "$fs=[IO.File]::Open($exe,'Open','ReadWrite','None'); $fs.Close(); break "
+        "} catch { Start-Sleep -Milliseconds 400 } }\n"
+        "Start-Sleep -Seconds 1\n"
+        "L 'running installer'\n"
+        f"$p=Start-Process -Wait -PassThru -FilePath {q(setup)} -ArgumentList @({args})\n"
+        "L ('installer exit=' + $(if ($p) { $p.ExitCode } else { 'null' }))\n"
         f"Start-Process -FilePath {q(app_exe)}\n"
+        "L 'relaunched'\n"
     )

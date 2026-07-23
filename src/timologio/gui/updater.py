@@ -250,15 +250,36 @@ class Updater(QObject):
         script_path.write_text(script, encoding="utf-8-sig")
 
         log.info("Εκκίνηση ενημέρωσης — η εφαρμογή κλείνει.")
-        subprocess.Popen(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-WindowStyle", "Hidden", "-File", str(script_path)],
-            creationflags=(
-                getattr(subprocess, "DETACHED_PROCESS", 0)
-                | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            ),
-            close_fds=True,
+        # Πλήρης διαδρομή του PowerShell: το PATH δεν είναι εγγυημένο μέσα στο
+        # πακεταρισμένο περιβάλλον, και ένα σκέτο "powershell" μπορεί να μη βρεθεί.
+        powershell = str(
+            Path(os.environ.get("SystemRoot", r"C:\Windows"))
+            / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
         )
+        if not Path(powershell).exists():
+            powershell = "powershell"
+        cmd = [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass",
+               "-WindowStyle", "Hidden", "-File", str(script_path)]
+        detached = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+        # ΚΡΙΣΙΜΟ: πολλά περιβάλλοντα (installers, launchers, ακόμη κι ο Explorer
+        # σε ορισμένες περιπτώσεις) βάζουν την εφαρμογή σε Job Object με
+        # «kill-on-close». Όταν κλείνει η εφαρμογή, το job σκοτώνει ΚΑΙ το
+        # detached PowerShell πριν προλάβει να εγκαταστήσει — γι' αυτό «κατέβαινε
+        # το αρχείο αλλά δεν γινόταν install». Το CREATE_BREAKAWAY_FROM_JOB το
+        # βγάζει από το job ώστε να επιβιώσει. Αν το job δεν επιτρέπει breakaway,
+        # η CreateProcess αποτυγχάνει — τότε ξαναδοκιμάζουμε χωρίς αυτό.
+        CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+        try:
+            subprocess.Popen(
+                cmd, creationflags=detached | CREATE_BREAKAWAY_FROM_JOB,
+                close_fds=True,
+            )
+        except OSError:
+            log.warning("Breakaway from job απέτυχε — εκκίνηση χωρίς αυτό.")
+            subprocess.Popen(cmd, creationflags=detached, close_fds=True)
         # Κλείνουμε «στα σοβαρά»: το script περιμένει να τερματίσουμε πριν
         # αντικαταστήσει τα αρχεία.
         window._really_quit = True

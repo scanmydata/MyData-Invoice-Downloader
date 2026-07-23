@@ -172,9 +172,10 @@ def test_updater_script_waits_installs_relaunches():
         tray=False,
         install_dir=Path(r"C:\Programs\App"),
     )
-    # Σειρά: περίμενε το κλείσιμο -> εγκατέστησε -> ξαναάνοιξε.
+    # Σειρά: περίμενε το κλείσιμο -> εγκατέστησε -> ξαναάνοιξε (η επανεκκίνηση
+    # είναι το ΤΕΛΕΥΤΑΙΟ App.exe, μετά τον installer).
     assert script.index("Wait-Process -Id 4321") < script.index("setup.exe")
-    assert script.index("Start-Process -Wait") < script.index(r"C:\Programs\App\App.exe")
+    assert script.index("Start-Process -Wait") < script.rindex(r"C:\Programs\App\App.exe")
     # Οι τρέχουσες ρυθμίσεις περνούν στον installer ώστε να μη χαθούν.
     assert "/ROLE=terminal" in script
     assert "/TRAY=0" in script
@@ -184,14 +185,18 @@ def test_updater_script_waits_installs_relaunches():
     # μπορεί να εγκατασταθεί αλλού και το relaunch να ανοίξει την παλιά.
     assert r"/DIR=C:\Programs\App" in script
     # Αναμονή για ξεκλείδωμα αρχείων πριν την εγκατάσταση: πρώτα κάθε instance
-    # με το όνομα, μετά force-kill ό,τι επιμένει, μετά καθυστέρηση για να
-    # απελευθερώσει ο πυρήνας τα DLL — αλλιώς η αναβάθμιση δεν πιάνει.
+    # με το όνομα, μετά force-kill ό,τι επιμένει, μετά ενεργή αναμονή μέχρι το exe
+    # να ξεκλειδώσει — αλλιώς η αναβάθμιση δεν πιάνει.
     assert "Get-Process -Name 'App'" in script
     assert "Stop-Process -Name 'App' -Force" in script
-    assert script.index("Get-Process -Name 'App'") < script.index("Start-Sleep -Seconds")
-    assert script.index("Start-Sleep -Seconds") < script.index("setup.exe")
-    # Ο installer γράφει log ώστε μια αποτυχία να είναι ορατή.
+    assert "[IO.File]::Open($exe" in script  # ενεργή αναμονή ξεκλειδώματος
+    assert script.index("Get-Process -Name 'App'") < script.index("setup.exe")
+    assert script.index("[IO.File]::Open($exe") < script.index("setup.exe")
+    # Ο installer γράφει log, ΚΑΙ το ίδιο το script καταγράφει κάθε βήμα με ώρα,
+    # ώστε μια αποτυχία «η ενημέρωση δεν δουλεύει» να είναι πάντα ορατή.
     assert "/LOG=" in script
+    assert "timologio_update_run.log" in script
+    assert "installer exit=" in script
 
 
 def test_updater_script_omits_dir_when_not_given():
