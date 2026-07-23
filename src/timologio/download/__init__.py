@@ -8,6 +8,7 @@ from .provider import (
     ProviderNotFound,
     ProviderRateLimited,
     ProviderUnavailable,
+    epsilon_pdf_url,
     pdf_url,
 )
 from .storage import (
@@ -31,6 +32,7 @@ __all__ = [
     "NotAPdf",
     "IncompleteDownload",
     "pdf_url",
+    "epsilon_pdf_url",
     "target_path",
     "resolve_path",
     "write_atomic",

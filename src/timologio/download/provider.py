@@ -9,7 +9,9 @@ downloadingInvoiceUrl είναι capability URLs (περιέχουν μη-μαν
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import requests
 
@@ -19,6 +21,9 @@ from .storage import PDF_MAGIC
 log = logging.getLogger(__name__)
 
 _FORMAT_SUFFIXES = ("/pdf", "/myDATA", "/EN16931")
+
+#: Host κατάληξη όλων των υποτομέων της Epsilon (epsilondigital*.epsilonnet.gr).
+_EPSILON_HOST = "epsilonnet.gr"
 
 
 class ProviderError(Exception):
@@ -87,6 +92,48 @@ def pdf_url(base: str) -> str:
     return trimmed + PDF_SUFFIX
 
 
+def epsilon_pdf_url(url: str) -> str | None:
+    """Άμεσο PDF endpoint της Epsilon, ή ``None`` αν το URL δεν είναι Epsilon.
+
+    Η Epsilon **δεν** επιστρέφει PDF με το ``/pdf`` suffix — δίνει τη σελίδα
+    προβολής (Blazor/DocViewer, πίσω από Cloudflare). Έχει όμως άμεσο REST
+    endpoint που σερβίρει το **ίδιο** PDF χωρίς browser και χωρίς έλεγχο
+    «είστε άνθρωπος»::
+
+        /filedocument/getfile?fileType=2&documentId=<uuid>
+
+    Μετρημένα, το ``fileType`` είναι: 0=JSON, 2=PDF, 3/4=XML. Το ``documentId``
+    είναι το μη-μαντεύσιμο capability token — ίδιο μοντέλο εμπιστοσύνης με το
+    downloadingInvoiceUrl, οπότε το endpoint δεν θέλει αυθεντικοποίηση.
+
+    Δέχεται και τις δύο μορφές συνδέσμου της Epsilon:
+    ``…/DocViewer/<uuid>`` και ``…/fd/<32-hex>:<n>`` (το δεύτερο μετατρέπεται
+    στο πρώτο — 32 hex → UUID 8-4-4-4-12).
+
+    ΠΡΟΣΟΧΗ: αρκετοί υποτομείς/tenants δεν εκθέτουν καθόλου server PDF (μόνο
+    XML/JSON)· εκεί το endpoint γυρίζει 404 και το παραστατικό πέφτει στο
+    browser πέρασμα ως «μόνο online».
+    """
+    p = urlparse(url)
+    if not (p.netloc or "").lower().endswith(_EPSILON_HOST):
+        return None
+    docid: str | None = None
+    if "/DocViewer/" in p.path:
+        docid = p.path.split("/DocViewer/")[-1].strip("/") or None
+    else:
+        m = re.search(r"/fd/([^/?#]+)", p.path, re.I)
+        if m:
+            hexonly = re.sub(r"[^0-9a-fA-F]", "", m.group(1).split(":")[0])
+            if len(hexonly) == 32:
+                docid = (
+                    f"{hexonly[0:8]}-{hexonly[8:12]}-{hexonly[12:16]}-"
+                    f"{hexonly[16:20]}-{hexonly[20:32]}"
+                )
+    if not docid:
+        return None
+    return f"{p.scheme}://{p.netloc}/filedocument/getfile?fileType=2&documentId={docid}"
+
+
 class ProviderDownloader:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -97,7 +144,15 @@ class ProviderDownloader:
         self._session.close()
 
     def fetch_pdf(self, url: str) -> PdfResult:
-        target = pdf_url(url)
+        # Epsilon: άμεσο getfile endpoint (χωρίς browser). Αν ο πάροχος δεν έχει
+        # server PDF (404), το μαρκάρουμε ως «μόνο online» (NotAPdf) ώστε να το
+        # πιάσει το browser πέρασμα — όχι σκληρή αποτυχία.
+        eps = epsilon_pdf_url(url)
+        if eps is not None:
+            return self._fetch(eps, missing_is_viewer=True)
+        return self._fetch(pdf_url(url), missing_is_viewer=False)
+
+    def _fetch(self, target: str, *, missing_is_viewer: bool) -> PdfResult:
         try:
             resp = self._session.get(
                 target, timeout=self._settings.provider_timeout, allow_redirects=True
@@ -108,6 +163,8 @@ class ProviderDownloader:
             raise ProviderUnavailable(str(exc)) from exc
 
         if resp.status_code in (404, 410):
+            if missing_is_viewer:
+                raise NotAPdf(f"HTTP {resp.status_code}: χωρίς server PDF")
             raise ProviderNotFound(f"HTTP {resp.status_code}")
         if resp.status_code in (401, 403):
             raise ProviderAuthRequired(f"HTTP {resp.status_code}")

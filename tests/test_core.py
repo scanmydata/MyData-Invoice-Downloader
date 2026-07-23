@@ -8,7 +8,14 @@ import pytest
 
 from timologio.config import load_settings
 from timologio.crypto import Crypto, SecretRedactingFilter
-from timologio.download import is_complete_pdf, pdf_url, sanitize, target_path, write_atomic
+from timologio.download import (
+    epsilon_pdf_url,
+    is_complete_pdf,
+    pdf_url,
+    sanitize,
+    target_path,
+    write_atomic,
+)
 from timologio.models import Direction, Document
 from timologio.mydata.parse import extract_cursors, iso_date, parse_documents
 from timologio.normalize import mask, norm_afm, valid_afm, valid_subscription_key
@@ -44,6 +51,36 @@ def test_pdf_url_appends_pdf_to_megasoft_query_urls() -> None:
     base = "https://invoicelink.megasoft.gr/invoiceinspect/qr?QrCode=ABC123=="
     assert pdf_url(base + "/") == base + "/pdf"
     assert pdf_url(base) == base + "/pdf"
+
+
+# --------------------------------------------------------------------------
+# epsilon_pdf_url — άμεσο getfile endpoint (χωρίς browser)
+# --------------------------------------------------------------------------
+
+def test_epsilon_fd_url_becomes_getfile_pdf() -> None:
+    """Το /fd/<32-hex>:<n> γίνεται getfile?fileType=2&documentId=<uuid>."""
+    url = "https://epsilondigital3.epsilonnet.gr/fd/97816f27fe1e426534b608de41a58b42:22"
+    assert epsilon_pdf_url(url) == (
+        "https://epsilondigital3.epsilonnet.gr/filedocument/getfile"
+        "?fileType=2&documentId=97816f27-fe1e-4265-34b6-08de41a58b42"
+    )
+
+
+def test_epsilon_docviewer_url_becomes_getfile_pdf() -> None:
+    """Το ήδη-κανονικό /DocViewer/<uuid> κρατά το uuid ως documentId."""
+    url = "https://epsilondigital.epsilonnet.gr/DocViewer/0ef118ff-42ba-45cb-ba94-08decb21430c"
+    assert epsilon_pdf_url(url) == (
+        "https://epsilondigital.epsilonnet.gr/filedocument/getfile"
+        "?fileType=2&documentId=0ef118ff-42ba-45cb-ba94-08decb21430c"
+    )
+
+
+def test_epsilon_pdf_url_ignores_non_epsilon() -> None:
+    """Μόνο η Epsilon· άλλοι πάροχοι μένουν στο /pdf μονοπάτι (None)."""
+    assert epsilon_pdf_url("https://invoicelink.megasoft.gr/x/qr?QrCode=abc") is None
+    assert epsilon_pdf_url("https://einvoice.impact.gr/foo/bar") is None
+    # Epsilon host αλλά χωρίς αναγνωρίσιμο documentId -> None (πέφτει στο /pdf).
+    assert epsilon_pdf_url("https://epsilondigital.epsilonnet.gr/login") is None
 
 
 # --------------------------------------------------------------------------
