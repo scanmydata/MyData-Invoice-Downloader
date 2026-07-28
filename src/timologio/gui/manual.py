@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
+import shutil
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QByteArray, QMarginsF, QSizeF
 from PySide6.QtGui import QPageLayout, QPageSize, QPdfWriter, QTextDocument
+
+log = logging.getLogger(__name__)
 
 from ..config import APP_VERSION
 from .icons import logo_pixmap
@@ -163,6 +168,13 @@ def _html() -> str:
   <li>Είδος «Έξοδα» + Χαρακτηρισμός «Αχαρακτήριστα» &rarr; η λίστα εργασίας σας.</li>
   <li>Λήψη «Χωρίς PDF παρόχου» &rarr; όσα δεν πέρασαν από κανάλι παρόχου.</li>
 </ul>
+<p>
+<b>Γρήγορα φίλτρα στήλης (όπως στο Excel):</b> περνώντας πάνω από μια
+επικεφαλίδα (Ημερομηνία, Αντισυμβαλλόμενος, ΑΦΜ, Τύπος, Κατάσταση…) εμφανίζεται
+ένα <b>χωνί</b>· πατήστε το για μια λίστα με τις τιμές της στήλης και επιλέξτε
+ποιες θα φαίνονται. Το ίδιο υπάρχει και στους πίνακες <b>Πελάτες</b> και
+<b>Λήψη</b>. <b>Διπλό κλικ</b> σε γραμμή «σε αναμονή» την κατεβάζει επιτόπου.
+</p>
 <p><b>Εξαγωγή σε ZIP:</b> τσεκάρετε παραστατικά και πατήστε «Εξαγωγή σε ZIP». Τα
 αρχεία μπαίνουν χύμα, χωρίς υποφακέλους — το όνομα του καθενός έχει ήδη
 προμηθευτή, ΑΦΜ, ημερομηνία, σειρά, Α/Α και αξία. Αν κάποια δεν έχουν PDF, η
@@ -230,8 +242,9 @@ def _html() -> str:
 
 <h2 style="color:{p.accent};">7β. Παραστατικά «μόνο online»</h2>
 <p>
-Κάποιοι πάροχοι (π.χ. <b>Epsilon</b>, <b>Megasoft</b>) δεν δίνουν PDF στον
-σύνδεσμο του παραστατικού: το δείχνουν μόνο σε δική τους online προβολή, συχνά
+Κάποιοι πάροχοι (π.χ. <b>Epsilon</b>, <b>Megasoft</b>, <b>eskap.gr</b>) δεν
+δίνουν PDF στον σύνδεσμο του παραστατικού: το δείχνουν μόνο σε δική τους online
+προβολή (κάποιοι, όπως η Megasoft και η eskap, κατεβαίνουν πλέον αυτόματα), συχνά
 πίσω από έλεγχο <b>«επιβεβαιώστε ότι είστε άνθρωπος»</b> (Cloudflare). Δεν
 υπάρχει λοιπόν PDF να κατεβεί αυτόματα, και τέτοια παραστατικά σημειώνονται
 <b>«Μόνο online»</b> — δεν είναι σφάλμα.
@@ -480,6 +493,23 @@ def _looks_built(path: Path) -> bool:
         return False
 
 
+def _bundled_manual() -> Path | None:
+    """Το **έτοιμο** εγχειρίδιο μέσα στο bundle (ή στον φάκελο docs/ από πηγή).
+
+    Το χτίζει το build.ps1 πριν το PyInstaller και μπαίνει στο bundle. Είναι πιο
+    αξιόπιστο από το runtime rendering, που στο πακεταρισμένο exe έβγαζε ενίοτε
+    κενό PDF.
+    """
+    # Μόνο το πραγματικό bundle (_MEIPASS): από πηγαίο κώδικα το docs/manual.pdf
+    # μπορεί να είναι παλιό, οπότε εκεί προτιμούμε να το ξαναχτίσουμε στην εκτέλεση.
+    base = getattr(sys, "_MEIPASS", "")
+    if base:
+        candidate = Path(base) / "manual.pdf"
+        if _looks_built(candidate):
+            return candidate
+    return None
+
+
 def ensure_manual(data_dir: Path) -> Path:
     """Η διαδρομή του εγχειριδίου, φτιάχνοντάς το αν λείπει ή αν άλλαξε.
 
@@ -506,12 +536,24 @@ def ensure_manual(data_dir: Path) -> Path:
         except OSError:
             pass
 
-    build_manual(target)
+    # Προτεραιότητα στο έτοιμο PDF του bundle — αξιόπιστο. Το runtime rendering
+    # (build_manual) μένει ως εφεδρεία (π.χ. τρέξιμο από πηγαίο κώδικα χωρίς
+    # bundle, ή αν λείπει το έτοιμο).
+    bundled = _bundled_manual()
+    if bundled is not None:
+        try:
+            shutil.copyfile(bundled, target)
+        except OSError as exc:
+            log.warning("Δεν αντιγράφηκε το έτοιμο εγχειρίδιο: %s", exc)
+
     if not _looks_built(target):
-        # Το PDF βγήκε κενό: μη γράφεις τη σφραγίδα (ώστε να ξαναδοκιμαστεί) και
-        # πες το καθαρά αντί να ανοίξει ένα άδειο αρχείο.
+        build_manual(target)
+
+    if not _looks_built(target):
+        # Ούτε το έτοιμο ούτε το runtime build πέτυχαν: μη γράφεις σφραγίδα
+        # (ώστε να ξαναδοκιμαστεί) και πες το καθαρά αντί να ανοίξει κενό.
         raise RuntimeError(
-            "Το εγχειρίδιο δημιουργήθηκε κενό. Δοκιμάστε ξανά· αν επιμένει, "
+            "Το εγχειρίδιο δεν δημιουργήθηκε σωστά. Δοκιμάστε ξανά· αν επιμένει, "
             "στείλτε το αρχείο καταγραφής."
         )
     try:

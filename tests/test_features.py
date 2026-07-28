@@ -190,6 +190,9 @@ def test_updater_script_waits_installs_relaunches():
     assert "Get-Process -Name 'App'" in script
     assert "Stop-Process -Name 'App' -Force" in script
     assert "[IO.File]::Open($exe" in script  # ενεργή αναμονή ξεκλειδώματος
+    # Μετά την ενημέρωση ο χρήστης πρέπει να ΔΕΙ την εφαρμογή, όχι να μαζευτεί
+    # στο tray: η επανεκκίνηση περνά --show.
+    assert "-ArgumentList '--show'" in script
     assert script.index("Get-Process -Name 'App'") < script.index("setup.exe")
     assert script.index("[IO.File]::Open($exe") < script.index("setup.exe")
     # Ο installer γράφει log, ΚΑΙ το ίδιο το script καταγράφει κάθε βήμα με ώρα,

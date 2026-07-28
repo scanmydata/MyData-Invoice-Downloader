@@ -7,7 +7,7 @@
 ; Build:  "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\timologio.iss
 
 #define AppName        "Timologio Downloader"
-#define AppVersion     "0.2.20"
+#define AppVersion     "0.2.21"
 #define AppPublisher   "scanmydata"
 #define AppExeName     "TimologioDownloader.exe"
 
@@ -180,6 +180,32 @@ begin
   end;
 end;
 
+// Ενημέρωση/επανεγκατάσταση πάνω σε υπάρχουσα εγκατάσταση: κρατάμε ΟΤΙ επέλεξε
+// ήδη ο χρήστης (φάκελος δεδομένων, ρόλος, tray). Χωρίς αυτό, μια χειροκίνητη
+// επανεγκατάσταση επανέφερε τον προεπιλεγμένο φάκελο — κι έτσι η εφαρμογή άνοιγε
+// σε **άδεια** βάση (φαινομενικό «σβήσιμο δεδομένων» + δείγματα + ξενάγηση ξανά).
+procedure PreselectFromExistingInstall;
+var
+  V: String;
+begin
+  if RegQueryStringValue(HKCU, 'Software\scanmydata\TimologioDownloader',
+                         'DataDir', V) and (V <> '') then
+    DataDirPage.Values[0] := V;
+  if RegQueryStringValue(HKCU, 'Software\scanmydata\TimologioDownloader',
+                         'Role', V) then
+  begin
+    if CompareText(V, 'server') = 0 then
+      RolePage.SelectedValueIndex := ROLE_SERVER
+    else if CompareText(V, 'terminal') = 0 then
+      RolePage.SelectedValueIndex := ROLE_TERMINAL
+    else
+      RolePage.SelectedValueIndex := ROLE_STANDALONE;
+  end;
+  if RegQueryStringValue(HKCU, 'Software\scanmydata\TimologioDownloader',
+                         'StartMinimized', V) then
+    TrayPage.Values[OPT_TRAY] := V = '1';
+end;
+
 procedure InitializeWizard;
 begin
   RolePage := CreateInputOptionPage(wpSelectDir,
@@ -215,6 +241,9 @@ begin
   TrayPage.Add('Εκκίνηση μαζεμένη στο tray, δίπλα στο ρολόι');
   TrayPage.Add('Αυτόματη εκκίνηση με τα Windows');
 
+  // Πρώτα κρατάμε ό,τι υπάρχει ήδη (ενημέρωση), μετά ό,τι δόθηκε ρητά στη
+  // γραμμή εντολών (σιωπηλή αυτόματη ενημέρωση) — αυτό υπερισχύει.
+  PreselectFromExistingInstall;
   ApplyCommandLine;
 end;
 

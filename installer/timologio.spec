@@ -30,9 +30,17 @@ a = Analysis(
     # Το εικονίδιο μπαίνει και ως δεδομένο, όχι μόνο στο exe: το παράθυρο το
     # φορτώνει κατά την εκτέλεση (gui/app.py:app_icon) για τη γραμμή εργασιών.
     # Το logo.svg το ζωγραφίζει το πλαϊνό μενού (gui/icons.py:logo_pixmap).
+    # Το εγχειρίδιο μπαίνει **έτοιμο** στο bundle (το χτίζει το build.ps1 πριν το
+    # PyInstaller): η εφαρμογή το αντιγράφει αντί να το ξαναστοιχειοθετεί στην
+    # εκτέλεση — το runtime rendering του QTextDocument έβγαζε ενίοτε κενό PDF στο
+    # πακεταρισμένο exe (gui/manual.py:ensure_manual).
     datas=[
         (path, ".")
-        for path in (ICON, os.path.join(SPECPATH, "logo.svg"))
+        for path in (
+            ICON,
+            os.path.join(SPECPATH, "logo.svg"),
+            os.path.join(ROOT, "docs", "manual.pdf"),
+        )
         if os.path.exists(path)
     ] + TZDATA,
     # websocket-client (import name «websocket») το φορτώνει το headless module

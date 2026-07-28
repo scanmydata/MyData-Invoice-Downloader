@@ -238,6 +238,9 @@ class TableColumnFilter(QObject):
     εφαρμόζεται μόνο του μετά από ταξινόμηση ή ξαναγέμισμα του πίνακα.
     """
 
+    #: Εκπέμπεται όταν αλλάζει το σύνολο των ενεργών φίλτρων στήλης.
+    filtersChanged = Signal()
+
     def __init__(self, table: QTableWidget, filterable: Iterable[int]) -> None:
         super().__init__(table)
         self.table = table
@@ -272,8 +275,19 @@ class TableColumnFilter(QObject):
             else:
                 self.filters[col] = chosen
             self.apply()
+            self.filtersChanged.emit()
 
         open_filter_popup(self._header, col, title or "Στήλη", values, selected, apply)
+
+    def clear(self) -> None:
+        """Καθαρίζει όλα τα φίλτρα στήλης και ξαναδείχνει τις γραμμές."""
+        if self.filters:
+            self.filters.clear()
+            self.apply()
+            self.filtersChanged.emit()
+
+    def has_filters(self) -> bool:
+        return any(self.filters.values())
 
     def _schedule(self) -> None:
         # Συγχώνευση: πολλά σήματα (ανά γραμμή στο γέμισμα) -> μία εφαρμογή.

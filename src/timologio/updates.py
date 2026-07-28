@@ -197,7 +197,10 @@ def build_updater_script(
         "L 'running installer'\n"
         f"$p=Start-Process -Wait -PassThru -FilePath {q(setup)} -ArgumentList @({args})\n"
         "L ('installer exit=' + $(if ($p) { $p.ExitCode } else { 'null' }))\n"
-        f"Start-Process -FilePath {q(app_exe)}\n"
+        # --show: μετά την ενημέρωση ο χρήστης πρέπει να ΔΕΙ την εφαρμογή, όχι να
+        # «εξαφανιστεί» στο tray (ισχύει ακόμη κι αν έχει επιλεγεί «εκκίνηση στο
+        # tray» — αυτή η εκκίνηση είναι το αποτέλεσμα μιας ρητής ενημέρωσης).
+        f"Start-Process -FilePath {q(app_exe)} -ArgumentList '--show'\n"
         "L 'relaunched'\n"
     )
 

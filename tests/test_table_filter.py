@@ -58,6 +58,25 @@ def test_column_filter_popup_live_apply(app):
     assert seen[-1] == {"1"}
 
 
+def test_table_filter_clear_and_signal(app):
+    from timologio.gui.table_filter import TableColumnFilter
+
+    table = QTableWidget(2, 2)
+    for row, name in enumerate(["Χ", "Ψ"]):
+        table.setItem(row, 1, QTableWidgetItem(name))
+    ctrl = TableColumnFilter(table, (1,))
+    emitted: list[int] = []
+    ctrl.filtersChanged.connect(lambda: emitted.append(1))
+
+    ctrl.filters[1] = {"Χ"}
+    ctrl.apply()
+    assert ctrl.has_filters()
+    ctrl.clear()
+    assert not ctrl.has_filters()
+    assert not any(table.isRowHidden(r) for r in range(2))
+    assert emitted  # clear() emitted filtersChanged
+
+
 def test_filter_header_reports_active(app):
     from timologio.gui.table_filter import FilterHeader
 

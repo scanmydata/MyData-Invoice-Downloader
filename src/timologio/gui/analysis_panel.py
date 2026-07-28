@@ -275,7 +275,7 @@ class AnalysisPanel(QScrollArea):
         root.addWidget(frame)
 
         # --- χαρακτηρισμός
-        frame, layout = _card("ΧΑΡΑΚΤΗΡΙΣΜΟΣ (RequestE3Info)")
+        frame, layout = _card("ΧΑΡΑΚΤΗΡΙΣΜΟΣ")
         row = QHBoxLayout()
         row.setSpacing(7)
         for value, caption, color, key, tip in [

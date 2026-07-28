@@ -98,6 +98,11 @@ _COLUMN_SPEC: list[tuple[str, int, str]] = [
     ("Τελευταία λήψη", 132, "Ημερομηνία και ώρα της τελευταίας επιτυχούς λήψης"),
 ]
 
+#: Έκδοση περιεχομένου ξενάγησης. Αύξησέ το όταν προστίθεται ουσιαστικά νέο βήμα:
+#: όσοι έχουν ήδη δει παλιότερη ξενάγηση την ξαναβλέπουν μία φορά — αλλά πάνω στα
+#: **δικά τους** δεδομένα (χωρίς εικονικούς πελάτες, χωρίς σβήσιμο).
+TOUR_VERSION = 2
+
 #: Σύντομη ετικέτα: το «Λείπει κλειδί API» έτρωγε 110px για να πει το ίδιο.
 _STATUS_READY = "Διαθέσιμος"
 _STATUS_NO_KEY = "Χωρίς κλειδί"
@@ -466,7 +471,19 @@ class MainWindow(QMainWindow):
         self.search.setPlaceholderText("Αναζήτηση ΑΦΜ ή επωνυμίας…")
         self.search.setToolTip("Φιλτράρει τη λίστα καθώς πληκτρολογείτε")
         self.search.textChanged.connect(self.reload_clients)
+        self.search.textChanged.connect(lambda _: self._update_client_filter_ui())
         filters.addWidget(self.search)
+
+        # Κόκκινο, και ορατό μόνο όταν υπάρχει ενεργό φίλτρο (αναζήτηση, φίλτρο
+        # κατάστασης ή φίλτρο στήλης) — αλλιώς δεν υπάρχει τίποτα να καθαριστεί.
+        self.btn_clear_client_filters = QPushButton("  Καθαρισμός φίλτρων")
+        self.btn_clear_client_filters.setObjectName("danger")
+        self.btn_clear_client_filters.setIcon(icon("cancel", CURRENT.bad))
+        self.btn_clear_client_filters.setToolTip(
+            "Επαναφορά αναζήτησης και φίλτρων (κατάστασης και στηλών)"
+        )
+        self.btn_clear_client_filters.clicked.connect(self._clear_client_filters)
+        filters.addWidget(self.btn_clear_client_filters)
         filters.addStretch()
 
         self.btn_clients_refresh = QPushButton("  Ανανέωση")
@@ -498,6 +515,15 @@ class MainWindow(QMainWindow):
         self.btn_check_none.clicked.connect(lambda: self._check_shown(False))
         selbar.addWidget(self.btn_check_none)
 
+        self.btn_delete_clients = QPushButton("  Διαγραφή επιλεγμένων")
+        self.btn_delete_clients.setObjectName("danger")
+        self.btn_delete_clients.setIcon(icon("delete", CURRENT.bad))
+        self.btn_delete_clients.setToolTip(
+            "Διαγράφει τους επιλεγμένους πελάτες (ίδιο με το πλήκτρο Delete)"
+        )
+        self.btn_delete_clients.clicked.connect(self._delete_selected)
+        selbar.addWidget(self.btn_delete_clients)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         # Ο πίνακας μπαίνει σε δικό του container μαζί με τη μπάρα επιλογής,
         # ώστε η μπάρα να κάθεται ΑΚΡΙΒΩΣ πάνω από τον πίνακα και όχι πάνω από
@@ -517,6 +543,7 @@ class MainWindow(QMainWindow):
         self._client_col_filter = TableColumnFilter(
             self.table, (_COL_VAT, _COL_LABEL, _COL_STATUS)
         )
+        self._client_col_filter.filtersChanged.connect(self._update_client_filter_ui)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -587,8 +614,26 @@ class MainWindow(QMainWindow):
         if not self._tooltips_on:
             self._apply_tooltips(False)
 
+    # --------------------------------------------------- φίλτρα λίστας πελατών
+    def _client_filters_active(self) -> bool:
+        return bool(
+            self.search.text().strip()
+            or self.combo_filter.currentIndex() != 0
+            or self._client_col_filter.has_filters()
+        )
+
+    def _update_client_filter_ui(self) -> None:
+        self.btn_clear_client_filters.setVisible(self._client_filters_active())
+
+    def _clear_client_filters(self) -> None:
+        self._client_col_filter.clear()
+        self.combo_filter.setCurrentIndex(0)
+        self.search.clear()  # πυροδοτεί reload_clients
+        self._update_client_filter_ui()
+
     # ------------------------------------------------------------- δεδομένα
     def reload_clients(self) -> None:
+        self._update_client_filter_ui()
         all_clients = repo.list_clients(self.conn)
         rows = list(all_clients)
         # Κρατάμε την τρέχουσα επιλογή ΚΑΤΑ ΑΦΜ, όχι κατά index: μετά το resort ο
@@ -1874,7 +1919,10 @@ class MainWindow(QMainWindow):
                 "Σε κάθε πίνακα της εφαρμογής:\n\n"
                 "• Σύρετε το όριο μιας επικεφαλίδας για να αλλάξετε πλάτος.\n"
                 "• Σύρετε την ίδια την επικεφαλίδα για να αλλάξετε σειρά.\n"
-                "• Κλικ στην επικεφαλίδα ταξινομεί.\n\n"
+                "• Κλικ στην επικεφαλίδα ταξινομεί.\n"
+                "• Περνώντας πάνω από μια επικεφαλίδα (ΑΦΜ, επωνυμία, "
+                "κατάσταση…) εμφανίζεται ένα χωνί: πατήστε το για γρήγορο "
+                "φίλτρο με λίστα τιμών — όπως στο Excel.\n\n"
                 "Ό,τι ρυθμίσετε αποθηκεύεται και σας περιμένει την επόμενη φορά. "
                 "Η στήλη της επωνυμίας γεμίζει μόνη της τον χώρο που περισσεύει, "
                 "μέχρι να της δώσετε εσείς πλάτος.",
@@ -1917,7 +1965,10 @@ class MainWindow(QMainWindow):
                 "«Μαζική εκτύπωση» που ανοίγει προεπισκόπηση και τυπώνει από εκεί.\n\n"
                 "Όσα ο πάροχος δείχνει «μόνο online» δεν έχουν PDF: με το εικονίδιο "
                 "συνδέσμου ανοίγει οδηγός που τα κατεβάζει μέσω του browser σας και "
-                "τα αρχειοθετεί μόνος του.",
+                "τα αρχειοθετεί μόνος του.\n\n"
+                "Συμβουλές: διπλό κλικ σε γραμμή «σε αναμονή» την κατεβάζει "
+                "επιτόπου· και κάθε στήλη έχει γρήγορο φίλτρο (το χωνί στην "
+                "επικεφαλίδα) για να δείτε π.χ. μόνο έναν προμηθευτή ή μία ημερομηνία.",
                 lambda: self.menu.button("documents"),
             ),
             Step(
@@ -1983,10 +2034,18 @@ class MainWindow(QMainWindow):
         να μείνει με άδεια οθόνη — τα δείγματα φεύγουν την επόμενη φορά.
         """
         repo.set_meta(self.conn, "tour_seen", "1")
+        repo.set_meta(self.conn, "tour_version", str(TOUR_VERSION))
         if not completed or not demo.has_demo(self.conn):
             return
         removed = demo.clear(self.conn)
+        # Οι εικονικοί πελάτες μόλις έφυγαν: καθάρισε κάθε επιλογή και τον ενεργό
+        # πελάτη, ώστε να μη μείνει «ενεργός»/τσεκαρισμένος ένας που δεν υπάρχει
+        # πια (αλλιώς η ανάλυση/η λήψη κρατούσαν ένα φάντασμα δείγματος).
+        self._checked.clear()
+        self._pinned_vat = None
+        self.table.clearSelection()
         self.reload_clients()
+        self._sync_checked()
         self._set_panel_open(False, animate=False)
         self._log(f"Διαγράφηκαν τα δεδομένα επίδειξης ({removed} πελάτες)")
         QMessageBox.information(
@@ -2015,12 +2074,19 @@ class MainWindow(QMainWindow):
         αναφέρθηκε. Η βάση ταξιδεύει με τον φάκελο, άρα «καινούριος φάκελος»
         σημαίνει «δείξε ξενάγηση».
         """
-        if repo.get_meta(self.conn, "tour_seen") == "1":
+        seen = repo.get_meta(self.conn, "tour_seen") == "1"
+        seen_version = int(repo.get_meta(self.conn, "tour_version") or 0)
+        # Ήδη ιδωμένη ΚΑΙ ενημερωμένη έκδοση ξενάγησης -> τίποτα. Αν όμως προστέθηκε
+        # νέο περιεχόμενο (TOUR_VERSION μεγαλύτερο), την ξαναδείχνουμε μία φορά —
+        # πάνω στα δεδομένα του χρήστη (demo.should_seed είναι ήδη False όταν
+        # υπάρχουν πραγματικοί πελάτες, οπότε δεν μπαίνουν εικονικά).
+        if seen and seen_version >= TOUR_VERSION:
             return
         # Μετάβαση από την παλιά αποθήκευση στο μητρώο: όποιος έχει ήδη δει την
-        # ξενάγηση δεν την ξαναβλέπει μετά την αναβάθμιση.
-        if self._prefs.value("tour_seen", False, type=bool):
+        # ξενάγηση δεν την ξαναβλέπει — εκτός αν άλλαξε το περιεχόμενο.
+        if not seen and self._prefs.value("tour_seen", False, type=bool):
             repo.set_meta(self.conn, "tour_seen", "1")
+            repo.set_meta(self.conn, "tour_version", str(TOUR_VERSION))
             return
         # Νέα εγκατάσταση με «εκκίνηση στο tray»: στην πρώτη εκκίνηση το παράθυρο
         # κρύβεται (_setup_tray) πριν προλάβει να τρέξει αυτό. Ξεκινώντας την
@@ -2181,24 +2247,39 @@ class MainWindow(QMainWindow):
             f"παραστατικά {vats[0]} {_safe_name(self._label_for(vats[0]))}".strip()
             if len(vats) == 1 else "παραστατικά"
         )
-        # Προεπιλογή το Excel — το ζήτησε ρητά ο χρήστης (ταξινόμηση εξωτερικά).
-        default = self.settings.data_dir / f"{base}.xlsx"
-        path, selected = QFileDialog.getSaveFileName(
-            self, f"Εξαγωγή — {who}", str(default),
-            "Excel (*.xlsx);;CSV (*.csv)",
+
+        # 1) Ρωτάμε πρώτα ρητά τη μορφή — Excel (ταξινομήσιμος πίνακας) ή CSV.
+        box = QMessageBox(self)
+        box.setWindowTitle("Εξαγωγή")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(f"Σε τι μορφή να γίνει η εξαγωγή για {who};")
+        box.setInformativeText(
+            "• <b>Excel (.xlsx)</b> — πραγματικός πίνακας με ταξινόμηση/φίλτρα\n"
+            "• <b>CSV</b> — απλό κείμενο, για εισαγωγή αλλού"
+        )
+        btn_excel = box.addButton("Excel", QMessageBox.ButtonRole.AcceptRole)
+        btn_csv = box.addButton("CSV", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Άκυρο", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(btn_excel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked not in (btn_excel, btn_csv):
+            return
+        is_excel = clicked is btn_excel
+        suffix = ".xlsx" if is_excel else ".csv"
+        kind = "Excel" if is_excel else "CSV"
+        writer = export_documents_xlsx if is_excel else export_documents
+
+        # 2) Πού θα αποθηκευτεί — με τον κανονικό browser των Windows.
+        default = self.settings.data_dir / f"{base}{suffix}"
+        filt = "Excel (*.xlsx)" if is_excel else "CSV (*.csv)"
+        path, _ = QFileDialog.getSaveFileName(
+            self, f"Αποθήκευση {kind} — {who}", str(default), filt
         )
         if not path:
             return
-
-        # Ο τύπος καθορίζεται από την κατάληξη· αν λείπει, από το επιλεγμένο φίλτρο.
-        is_excel = path.lower().endswith(".xlsx") or (
-            not path.lower().endswith(".csv") and "xlsx" in (selected or "")
-        )
-        suffix = ".xlsx" if is_excel else ".csv"
         if not path.lower().endswith(suffix):
             path += suffix
-        kind = "Excel" if is_excel else "CSV"
-        writer = export_documents_xlsx if is_excel else export_documents
 
         total = 0
         with self._busy(f"Εξαγωγή {kind} — {who}…"):
