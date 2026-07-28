@@ -201,6 +201,12 @@ class DocumentsView(QWidget):
         bar.addWidget(self.title)
         bar.addStretch()
 
+        self.btn_refresh = QPushButton("  Ανανέωση")
+        self.btn_refresh.setIcon(icon("refresh", CURRENT.muted))
+        self.btn_refresh.setToolTip("Ξαναδιαβάζει τα παραστατικά από τη βάση")
+        self.btn_refresh.clicked.connect(self.reload)
+        bar.addWidget(self.btn_refresh)
+
         for text, value, tip in [
             ("Επιλογή όλων", True, "Επιλέγει όσα δείχνει η προβολή"),
             ("Αποεπιλογή όλων", False, "Καθαρίζει τις επιλογές"),
@@ -822,6 +828,7 @@ class DocumentsView(QWidget):
     def restyle(self) -> None:
         """Μετά από αλλαγή θέματος: εικονίδια και χρώματα κελιών."""
         self.btn_back.setIcon(icon("back", CURRENT.muted))
+        self.btn_refresh.setIcon(icon("refresh", CURRENT.muted))
         self.btn_zip.setIcon(icon("backup", CURRENT.muted))
         self.btn_print.setIcon(icon("pdf", CURRENT.muted))
         self.title_icon.setPixmap(icon("pdf", CURRENT.accent, 22).pixmap(QSize(22, 22)))

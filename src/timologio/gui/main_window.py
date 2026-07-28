@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -49,7 +50,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtWidgets import QApplication, QCheckBox
 
 from .. import demo, logs, presence, repo
-from ..backup import create_backup, list_backups, restore
+from ..backup import backup_dir, create_backup, list_backups, restore
 from ..config import (
     APP_VERSION,
     ROLE_LABELS_EL,
@@ -262,14 +263,20 @@ class MainWindow(QMainWindow):
         # Όσο τρέχει η δική μας λήψη ανανεώνουμε ήδη ανά πελάτη — μην μπλέκουμε.
         if self._thread is not None:
             return
-        # Μόνο στη σελίδα Πελατών/Λήψης έχει νόημα να ξαναγεμίσει ο πίνακας·
-        # στη σελίδα Παραστατικών ή στον Πίνακα ελέγχου δεν το αγγίζουμε.
-        if self._current_page() not in ("clients", "sync"):
+        page = self._current_page()
+        # Στον Πίνακα ελέγχου δεν αγγίζουμε πίνακες παραστατικών/πελατών.
+        if page not in ("clients", "sync", "documents"):
             return
         mtime = self._db_mtime()
         if mtime and mtime != self._last_db_mtime:
-            log.debug("Η βάση άλλαξε από άλλον — ζωντανή ανανέωση")
-            self.reload_clients()  # ενημερώνει και το _last_db_mtime
+            log.debug("Η βάση άλλαξε — ζωντανή ανανέωση (%s)", page)
+            # Στη σελίδα Παραστατικών ανανεώνουμε τον πίνακα του πελάτη· αλλιώς
+            # τη λίστα πελατών. (Και τα δύο ενημερώνουν έμμεσα το _last_db_mtime.)
+            if page == "documents":
+                self.docs.reload()
+                self._last_db_mtime = mtime
+            else:
+                self.reload_clients()  # ενημερώνει και το _last_db_mtime
 
     # ---------------------------------------------------------------- tray
     def _setup_tray(self) -> None:
@@ -289,6 +296,21 @@ class MainWindow(QMainWindow):
     def _on_start_minimized(self, value: bool) -> None:
         save_start_minimized(value)
         log.info("Εκκίνηση στο tray: %s", "ναι" if value else "όχι")
+
+    def _notify_done(self, title: str, body: str) -> None:
+        """Στο τέλος μιας εργασίας: ειδοποίηση Windows (κάτω δεξιά) + αναβόσβημα
+        του εικονιδίου στη γραμμή εργασιών — ώστε να το προσέξει ο χρήστης ακόμη
+        κι αν κοιτάζει άλλο παράθυρο ή η εφαρμογή είναι μαζεμένη στο tray."""
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            try:
+                tray.notify(title, body)
+            except Exception:  # noqa: BLE001 — η ειδοποίηση δεν πρέπει να σκάει
+                pass
+        # alert() αναβοσβήνει το εικονίδιο μέχρι να εστιαστεί το παράθυρο· δεν
+        # κλέβει την εστίαση (δεν πετάγεται μπροστά ενώ δουλεύει ο χρήστης).
+        if not self.isActiveWindow():
+            QApplication.alert(self, 0)
 
     # ---------------------------------------------------------- ενημερώσεις
     def _check_updates_on_startup(self) -> None:
@@ -354,6 +376,7 @@ class MainWindow(QMainWindow):
         self.sync_page.sync_requested.connect(self.on_sync)
         self.sync_page.cancel_requested.connect(self.on_cancel)
         self.sync_page.selection_changed.connect(self._on_sync_selection)
+        self.sync_page.refresh_requested.connect(self.reload_clients)
         self.stack.addWidget(self.sync_page)
 
         self.docs = DocumentsView(self.settings, self._prefs)
@@ -444,6 +467,13 @@ class MainWindow(QMainWindow):
         self.search.setToolTip("Φιλτράρει τη λίστα καθώς πληκτρολογείτε")
         self.search.textChanged.connect(self.reload_clients)
         filters.addWidget(self.search)
+        filters.addStretch()
+
+        self.btn_clients_refresh = QPushButton("  Ανανέωση")
+        self.btn_clients_refresh.setIcon(icon("refresh", CURRENT.muted))
+        self.btn_clients_refresh.setToolTip("Ξαναδιαβάζει τη λίστα πελατών από τη βάση")
+        self.btn_clients_refresh.clicked.connect(self.reload_clients)
+        filters.addWidget(self.btn_clients_refresh)
         layout.addLayout(filters)
 
         # --- μπάρα επιλογής, ακριβώς πάνω από τον πίνακα
@@ -1599,13 +1629,20 @@ class MainWindow(QMainWindow):
             "σας, τα αποθηκεύετε ως PDF και η εφαρμογή τα αρχειοθετεί μόνη της. "
             "Δουλεύει και για παρόχους πίσω από έλεγχο «είστε άνθρωπος» "
             "(π.χ. Epsilon, Megasoft).<br><br>"
-            "<b>Αυτόματα</b>: μόνο με <b>αόρατο</b> browser (γρήγορα, παράλληλα) — "
-            "<b>δεν ανοίγει κανένα παράθυρο</b>. Πιάνει όσα δεν έχουν έλεγχο "
-            "«είστε άνθρωπος»· όσα κρύβονται πίσω από τέτοιον έλεγχο μένουν «μόνο "
-            "online» και τα κατεβάζετε με το «Μέσω του browser μου»."
+            "<b>Αυτόματα (αόρατα)</b>: μόνο με <b>αόρατο</b> browser (γρήγορα, "
+            "παράλληλα) — δεν ανοίγει παράθυρο. Πιάνει όσα δεν έχουν έλεγχο "
+            "«είστε άνθρωπος».<br><br>"
+            "<b>Αυτόματα (ορατός browser)</b>: ανοίγει ένα <b>ορατό</b> παράθυρο "
+            "και δοκιμάζει να αποθηκεύσει μόνο του. Την <b>πρώτη φορά</b> ίσως "
+            "χρειαστεί να συνδεθείτε στον πάροχο ή να περάσετε τον έλεγχο «είστε "
+            "άνθρωπος» μέσα στο παράθυρο — η σύνδεση θυμάται, ώστε οι επόμενες "
+            "φορές να είναι αυτόματες. <b>Δεν παρακάμπτουμε κανέναν έλεγχο.</b>"
         )
         btn_browser = box.addButton("Μέσω του browser μου", QMessageBox.ButtonRole.AcceptRole)
-        btn_auto = box.addButton("Αυτόματα", QMessageBox.ButtonRole.ActionRole)
+        btn_auto = box.addButton("Αυτόματα (αόρατα)", QMessageBox.ButtonRole.ActionRole)
+        btn_auto_headed = box.addButton(
+            "Αυτόματα (ορατός browser)", QMessageBox.ButtonRole.ActionRole
+        )
         box.addButton("Άκυρο", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(btn_browser)
         box.exec()
@@ -1613,7 +1650,7 @@ class MainWindow(QMainWindow):
         if clicked == btn_browser:
             self._open_online_only_browser(vats)
             return
-        if clicked != btn_auto:
+        if clicked not in (btn_auto, btn_auto_headed):
             return
 
         from ..download import headless
@@ -1629,6 +1666,21 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._start_headless_worker(vats, n, headed=clicked == btn_auto_headed)
+
+    def _browser_profile_dir(self) -> str:
+        """Μόνιμος, ΤΟΠΙΚΟΣ φάκελος προφίλ για τον ορατό browser της λήψης.
+
+        Ξεχωριστός από το πραγματικό προφίλ του Chrome/Edge του χρήστη — εδώ
+        απλώς θυμόμαστε τη δική μας συνεδρία στον πάροχο. Τοπικός (LOCALAPPDATA)
+        και όχι στον φάκελο δεδομένων, που μπορεί να είναι δικτυακός.
+        """
+        base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+        return str(Path(base) / "TimologioDownloader" / "browser_profile")
+
+    def _start_headless_worker(
+        self, vats: list[str] | None, n: int, *, headed: bool
+    ) -> None:
         create_backup(self.settings.db_path, reason="headless")
         self._hl_dialog = QProgressDialog(
             "Άνοιγμα browser…", "Ακύρωση", 0, n, self
@@ -1640,9 +1692,18 @@ class MainWindow(QMainWindow):
         self._hl_dialog.setValue(0)
 
         self._hl_thread = QThread(self)
-        # Αυτόματα = μόνο αόρατος browser. Δεν ανοίγουμε ορατά παράθυρα από μόνοι
-        # μας — τα Cloudflare-gated τα κατεβάζει ο χρήστης με «Μέσω του browser μου».
-        self._hl_worker = HeadlessWorker(vats, headed_fallback=False)
+        if headed:
+            # Ορατό πέρασμα με μόνιμο προφίλ: ο χρήστης περνά ο ίδιος τυχόν έλεγχο
+            # «είστε άνθρωπος» στο ορατό παράθυρο· μετά η σελίδα αποθηκεύεται
+            # αυτόματα (print-to-PDF) και η συνεδρία θυμάται για τις επόμενες.
+            self._hl_worker = HeadlessWorker(
+                vats, headed_fallback=True,
+                headed_profile=self._browser_profile_dir(),
+                headed_patient=True, headed_timeout=60.0,
+            )
+        else:
+            # Αυτόματα = μόνο αόρατος browser. Τα Cloudflare-gated μένουν «μόνο online».
+            self._hl_worker = HeadlessWorker(vats, headed_fallback=False)
         self._hl_worker.moveToThread(self._hl_thread)
         self._hl_thread.started.connect(self._hl_worker.run)
         self._hl_worker.message.connect(self._on_headless_message)
@@ -1732,6 +1793,10 @@ class MainWindow(QMainWindow):
             lines.append(
                 f'<span style="color:{CURRENT.bad};">{failed} με σφάλμα</span>'
             )
+        body = f"{saved} κατέβηκαν ως PDF"
+        if skipped:
+            body += f" · {skipped} μόνο online"
+        self._notify_done("Η λήψη μόνο-online ολοκληρώθηκε", body)
         QMessageBox.information(
             self, "Η λήψη μόνο-online ολοκληρώθηκε",
             "Ολοκληρώθηκε.<br><br>" + "<br>".join(lines),
@@ -2009,7 +2074,18 @@ class MainWindow(QMainWindow):
     def on_restore(self) -> None:
         backups = list_backups(self.settings.data_dir)
         if not backups:
-            QMessageBox.information(self, "Επαναφορά", "Δεν υπάρχουν αντίγραφα.")
+            # Κανένα αντίγραφο στον φάκελο: αντί για αδιέξοδο μήνυμα, αφήνουμε τον
+            # χρήστη να δείξει ένα αρχείο βάσης που κρατά αλλού (π.χ. σε USB ή
+            # άλλον υπολογιστή) — χρήσιμο σε καθαρή/άδεια εγκατάσταση.
+            answer = QMessageBox.question(
+                self, "Επαναφορά",
+                "Δεν βρέθηκαν αντίγραφα στον φάκελο δεδομένων.\n\n"
+                "Θέλετε να επιλέξετε εσείς ένα αρχείο βάσης (.db) για επαναφορά;",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self._restore_from_chosen_file()
             return
         newest, when, size = backups[0]
         answer = QMessageBox.question(
@@ -2017,17 +2093,65 @@ class MainWindow(QMainWindow):
             f"Επαναφορά από το πιο πρόσφατο αντίγραφο;\n\n"
             f"{newest.name}\n{when:%d/%m/%Y %H:%M} · {size/1024:.0f} KB\n\n"
             "Η τρέχουσα βάση θα κρατηθεί ως αντίγραφο «pre-restore», "
-            "οπότε η ενέργεια είναι αναστρέψιμη.",
+            "οπότε η ενέργεια είναι αναστρέψιμη.\n\n"
+            "«Άλλο αρχείο…» για να επιλέξετε δικό σας αρχείο βάσης.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            | QMessageBox.StandardButton.Open,
+        )
+        if answer == QMessageBox.StandardButton.Open:
+            self._restore_from_chosen_file()
+            return
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._do_restore(newest)
+
+    def _restore_from_chosen_file(self) -> None:
+        """Επαναφορά από αρχείο βάσης που δείχνει ο χρήστης (file picker)."""
+        start_dir = str(backup_dir(self.settings.data_dir))
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Επιλέξτε αρχείο βάσης για επαναφορά", start_dir,
+            "Βάση SQLite (*.db);;Όλα τα αρχεία (*.*)",
+        )
+        if not path:
+            return
+        chosen = Path(path)
+        if chosen.resolve() == self.settings.db_path.resolve():
+            QMessageBox.warning(
+                self, "Επαναφορά",
+                "Επιλέξατε την τρέχουσα βάση — δεν έχει νόημα η επαναφορά από τον "
+                "εαυτό της.",
+            )
+            return
+        answer = QMessageBox.question(
+            self, "Επαναφορά βάσης",
+            f"Επαναφορά από:\n{chosen.name}\n\n"
+            "Η τρέχουσα βάση θα κρατηθεί ως αντίγραφο «pre-restore», οπότε η "
+            "ενέργεια είναι αναστρέψιμη. Συνέχεια;",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        with self._busy("Επαναφορά βάσης…"):
-            self.conn.close()
-            restore(newest, self.settings.db_path)
+        self._do_restore(chosen)
+
+    def _do_restore(self, source: Path) -> None:
+        try:
+            with self._busy("Επαναφορά βάσης…"):
+                self.conn.close()
+                restore(source, self.settings.db_path)
+                self.conn = init_db(self.settings.db_path)
+                self.reload_clients()
+        except Exception as exc:  # noqa: BLE001 — δείξε το σφάλμα, μη σκας
+            # Ξαναανοίγουμε τη βάση ώστε η εφαρμογή να μη μείνει χωρίς σύνδεση.
             self.conn = init_db(self.settings.db_path)
-            self.reload_clients()
-        self._log(f"Έγινε επαναφορά από {newest.name}")
+            QMessageBox.critical(
+                self, "Απέτυχε η επαναφορά",
+                f"Η επαναφορά δεν ολοκληρώθηκε:\n\n{exc}",
+            )
+            return
+        self._log(f"Έγινε επαναφορά από {source.name}")
+        QMessageBox.information(
+            self, "Επαναφορά", f"Έγινε επαναφορά από:\n{source.name}"
+        )
 
     def on_export(self) -> None:
         """Εξαγωγή σε Excel (.xlsx, με ταξινομήσιμο πίνακα) ή CSV.
@@ -2133,6 +2257,11 @@ class MainWindow(QMainWindow):
         self.reload_clients()
         self._on_selection()
         if completed:
+            found, pdfs, no_url, viewer_only, failed = totals or (0, 0, 0, 0, 0)
+            body = f"{found} παραστατικά · {pdfs} PDF"
+            if failed:
+                body += f" · {failed} σφάλματα"
+            self._notify_done("Η λήψη ολοκληρώθηκε", body)
             self._show_sync_summary(totals)
 
     def _show_sync_summary(self, totals: tuple[int, int, int, int, int] | None) -> None:

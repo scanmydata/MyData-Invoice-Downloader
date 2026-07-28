@@ -234,6 +234,53 @@ def test_probe_browsers_empty_when_none(monkeypatch):
     assert headless.probe_browsers() == []
 
 
+def test_headed_pass_uses_persistent_per_browser_profile(monkeypatch):
+    """Το ορατό πέρασμα δίνει στον renderer μόνιμο, ανά-browser φάκελο προφίλ,
+    ώστε να θυμάται τη σύνδεση του χρήστη στον πάροχο (χωρίς bypass)."""
+    from pathlib import Path
+
+    from timologio import sync
+    from timologio.download import headless
+
+    seen: dict[str, object] = {}
+
+    class Rec:
+        def __init__(self, browser=None, headed=False, profile_dir=None,
+                     should_cancel=None, **k):
+            seen["profile_dir"] = profile_dir
+            seen["headed"] = headed
+
+    monkeypatch.setattr(headless, "HeadlessRenderer", Rec)
+    edge = Path(r"C:\Edge\msedge.exe")
+    renderer, idx = sync._open_renderer_with_fallback(
+        [edge], 0, headed=True, should_cancel=None,
+        progress=lambda m: None, profile_dir=r"C:\prof",
+    )
+    assert seen["headed"] is True
+    assert seen["profile_dir"] == str(Path(r"C:\prof") / "msedge")
+
+
+def test_open_renderer_no_profile_by_default(monkeypatch):
+    from pathlib import Path
+
+    from timologio import sync
+    from timologio.download import headless
+
+    seen: dict[str, object] = {}
+
+    class Rec:
+        def __init__(self, browser=None, headed=False, profile_dir=None,
+                     should_cancel=None, **k):
+            seen["profile_dir"] = profile_dir
+
+    monkeypatch.setattr(headless, "HeadlessRenderer", Rec)
+    sync._open_renderer_with_fallback(
+        [Path(r"C:\Edge\msedge.exe")], 0, headed=False, should_cancel=None,
+        progress=lambda m: None,
+    )
+    assert seen["profile_dir"] is None
+
+
 def test_download_viewer_only_saves_renderable_keeps_rest(conn, tmp_path, monkeypatch):
     """Ο renderer επιστρέφει PDF για τη μία σελίδα και None για την άλλη:
     η πρώτη γίνεται downloaded με αρχείο, η δεύτερη μένει viewer_only."""

@@ -148,13 +148,24 @@ class HeadlessWorker(QObject):
     failed = Signal(str)
 
     def __init__(
-        self, vats: list[str] | None = None, *, headed_fallback: bool = True
+        self,
+        vats: list[str] | None = None,
+        *,
+        headed_fallback: bool = True,
+        headed_profile: str | None = None,
+        headed_patient: bool = True,
+        headed_timeout: float = 150.0,
     ) -> None:
         super().__init__()
         self._vats = vats
         # Όταν είναι False, η αυτόματη λήψη μένει μόνο σε αόρατο browser και ΔΕΝ
         # ανοίγει ορατά παράθυρα — τα Cloudflare-gated μένουν «μόνο online».
         self._headed_fallback = headed_fallback
+        # Ορατό πέρασμα με μόνιμο προφίλ + σύντομο timeout: για συνδεδεμένους
+        # παρόχους (ο χρήστης έχει ήδη περάσει τον έλεγχο), δοκιμή αυτόματης λήψης.
+        self._headed_profile = headed_profile
+        self._headed_patient = headed_patient
+        self._headed_timeout = headed_timeout
         self._cancel = threading.Event()
 
     def cancel(self) -> None:
@@ -171,6 +182,9 @@ class HeadlessWorker(QObject):
             saved, skipped, failed = download_viewer_only(
                 conn, settings, vats=self._vats,
                 headed_fallback=self._headed_fallback,
+                headed_profile=self._headed_profile,
+                headed_patient=self._headed_patient,
+                headed_timeout=self._headed_timeout,
                 progress=lambda m: self.message.emit(m),
                 count=lambda d, t: self.progress.emit(d, t),
                 should_cancel=self._cancel.is_set,

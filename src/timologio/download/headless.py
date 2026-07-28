@@ -199,10 +199,19 @@ class HeadlessRenderer:
         *,
         launch_timeout: float = 20.0,
         headed: bool = False,
+        profile_dir: str | Path | None = None,
         should_cancel: Callable[[], bool] | None = None,
     ):
         self._browser = browser or find_browser()
         self._should_cancel = should_cancel
+        # Μόνιμος φάκελος προφίλ (προαιρετικά): κρατά τη σύνδεση του χρήστη στον
+        # πάροχο ανάμεσα σε τρεξίματα, ώστε αν έχει περάσει μία φορά τον έλεγχο
+        # «είστε άνθρωπος»/έχει συνδεθεί, να μη χρειάζεται ξανά. Είναι ΔΙΚΟΣ ΜΑΣ
+        # φάκελος (όχι το πραγματικό προφίλ του Chrome του χρήστη) — δεν αγγίζουμε
+        # ούτε αντιγράφουμε τα cookies του κανονικού browser του. Αν δοθεί, ΔΕΝ
+        # τον σβήνουμε στο close.
+        self._persistent_profile = profile_dir is not None
+        self._fixed_profile = str(profile_dir) if profile_dir is not None else None
         if self._browser is None:
             raise BrowserNotFound(
                 "Δεν βρέθηκε Microsoft Edge ή Google Chrome. Εγκαταστήστε έναν "
@@ -224,7 +233,11 @@ class HeadlessRenderer:
     def _launch(self, timeout: float) -> None:
         import websocket  # τοπικό import: η εξάρτηση είναι προαιρετική
 
-        self._profile = tempfile.mkdtemp(prefix="tl_headless_")
+        if self._fixed_profile is not None:
+            os.makedirs(self._fixed_profile, exist_ok=True)
+            self._profile = self._fixed_profile
+        else:
+            self._profile = tempfile.mkdtemp(prefix="tl_headless_")
         # Το headed διαφέρει από το headless ΜΟΝΟ στο ότι είναι ορατό: ίδια
         # σταθερά flags (και --disable-gpu, που κρατά τον renderer σταθερό — ένα
         # crash του GPU process έριχνε το DevTools websocket με «σφάλμα browser»).
@@ -434,7 +447,12 @@ class HeadlessRenderer:
         if self._proc is not None:
             self._kill_tree(self._proc)
             self._proc = None
-        if self._profile and os.path.isdir(self._profile):
+        # Μόνιμο προφίλ: το κρατάμε (εκεί ζει η σύνδεση του χρήστη). Προσωρινό:
+        # το καθαρίζουμε.
+        if (
+            self._profile and not self._persistent_profile
+            and os.path.isdir(self._profile)
+        ):
             shutil.rmtree(self._profile, ignore_errors=True)
             self._profile = None
 

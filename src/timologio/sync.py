@@ -522,7 +522,7 @@ class AllBrowsersFailed(Exception):
 
 
 def _open_renderer_with_fallback(
-    browsers, browser_idx, *, headed, should_cancel, progress,
+    browsers, browser_idx, *, headed, should_cancel, progress, profile_dir=None,
 ):
     """Ανοίγει renderer δοκιμάζοντας τους browsers με τη σειρά (Edge → Chrome).
 
@@ -530,14 +530,22 @@ def _open_renderer_with_fallback(
     browser»), δοκιμάζει τον επόμενο· έτσι ο χρήστης δεν κολλάει επειδή π.χ. ο
     Edge έχει πρόβλημα. Πετά ``HeadlessCancelled`` σε ακύρωση, ή
     ``AllBrowsersFailed`` αν κανένας δεν ανοίξει.
+
+    ``profile_dir`` (προαιρετικό): μόνιμος φάκελος προφίλ ώστε να διατηρείται η
+    σύνδεση του χρήστη στον πάροχο. Δίνεται ξεχωριστός υποφάκελος ανά browser,
+    γιατί το ίδιο προφίλ δεν μοιράζεται ανάμεσα σε Edge και Chrome.
     """
     from .download.headless import HeadlessCancelled, HeadlessError, HeadlessRenderer
 
     idx = browser_idx
     while idx < len(browsers):
         try:
+            per_browser_profile = (
+                str(Path(profile_dir) / browsers[idx].stem) if profile_dir else None
+            )
             renderer = HeadlessRenderer(
                 browser=browsers[idx], headed=headed, should_cancel=should_cancel,
+                profile_dir=per_browser_profile,
             )
             if idx > browser_idx:
                 progress(f"  ↻ δοκιμή με {browsers[idx].name}")
@@ -561,6 +569,7 @@ def _render_viewer_batch(
     progress: ProgressFn,
     should_cancel: Callable[[], bool] | None,
     on_done: Callable[[], None] | None = None,
+    profile_dir: str | None = None,
 ) -> tuple[int, int, list[sqlite3.Row]]:
     """Αποδίδει μια παρτίδα «μόνο online» **σειριακά, με έναν browser**.
 
@@ -604,6 +613,7 @@ def _render_viewer_batch(
                     renderer, browser_idx = _open_renderer_with_fallback(
                         browsers, browser_idx, headed=headed,
                         should_cancel=should_cancel, progress=progress,
+                        profile_dir=profile_dir,
                     )
                 pdf = renderer.render_pdf(
                     row["downloading_invoice_url"], patient=patient,
@@ -713,6 +723,9 @@ def download_viewer_only(
     count: Callable[[int, int], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
     headed_fallback: bool = True,
+    headed_profile: str | None = None,
+    headed_patient: bool = True,
+    headed_timeout: float = 150.0,
 ) -> tuple[int, int, int]:
     """Κατεβάζει τα «μόνο online» παραστατικά, σε τρία περάσματα.
 
@@ -774,17 +787,29 @@ def download_viewer_only(
     saved += s1
 
     # Πέρασμα 2: ορατός headed browser για όσα έμειναν, αν το θέλει ο χρήστης.
+    # Δουλεύει και για παρόχους πίσω από έλεγχο «είστε άνθρωπος» (π.χ. Epsilon):
+    # τον έλεγχο τον περνά ο ΙΔΙΟΣ ο χρήστης στο ορατό παράθυρο — ΔΕΝ τον
+    # παρακάμπτουμε. Με μόνιμο προφίλ (headed_profile), αν έχει ήδη περάσει/
+    # συνδεθεί μία φορά, η σελίδα φορτώνει και αποθηκεύεται αυτόματα (μέσω
+    # print-to-PDF) μέσα στο σύντομο headed_timeout.
     cancelled = bool(should_cancel and should_cancel())
     if headed_fallback and remaining and not cancelled:
-        progress(
-            f"  ▶ {len(remaining)} παραστατικά ανοίγουν σε ΟΡΑΤΟ browser, ένα-ένα "
-            "— μόλις εμφανιστεί το καθένα αποθηκεύεται και ανοίγει το επόμενο."
-        )
+        if headed_patient:
+            progress(
+                f"  ▶ {len(remaining)} παραστατικά ανοίγουν σε ΟΡΑΤΟ browser, ένα-ένα "
+                "— μόλις εμφανιστεί το καθένα αποθηκεύεται και ανοίγει το επόμενο."
+            )
+        else:
+            progress(
+                f"  ▶ {len(remaining)} παραστατικά: γρήγορη δοκιμή σε ΟΡΑΤΟ browser "
+                f"(έως {int(headed_timeout)}s το καθένα)."
+            )
         # Σειριακά (ένα ορατό παράθυρο): ανοίγει το επόμενο μόλις ολοκληρωθεί το
         # προηγούμενο — πιο ξεκάθαρο από πολλά παράθυρα μαζί.
         s2, f2, remaining = _render_viewer_batch(
-            conn, settings, remaining, headed=True, patient=True, timeout=150.0,
-            progress=progress, should_cancel=should_cancel, on_done=bump,
+            conn, settings, remaining, headed=True, patient=headed_patient,
+            timeout=headed_timeout, progress=progress, should_cancel=should_cancel,
+            on_done=bump, profile_dir=headed_profile,
         )
         saved += s2
         failed += f2

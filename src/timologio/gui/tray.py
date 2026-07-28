@@ -72,3 +72,7 @@ class Tray(QSystemTrayIcon):
             QSystemTrayIcon.MessageIcon.Information,
             5000,
         )
+
+    def notify(self, title: str, body: str, msecs: int = 6000) -> None:
+        """Ειδοποίηση των Windows (κάτω δεξιά) όταν ολοκληρώνεται μια εργασία."""
+        self.showMessage(title, body, QSystemTrayIcon.MessageIcon.Information, msecs)

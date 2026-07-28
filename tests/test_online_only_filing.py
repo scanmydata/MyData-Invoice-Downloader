@@ -165,6 +165,39 @@ def test_download_viewer_only_headed_fallback(
     assert (saved2, skipped2, failed2) == (0, 1, 0)
 
 
+def test_guided_flow_deletes_downloads_duplicate(
+    conn: sqlite3.Connection, tmp_path: Path
+) -> None:
+    """Αφού αρχειοθετηθεί το PDF στον φάκελο του πελάτη, το πρωτότυπο στις
+    «Λήψεις» είναι άχρηστο διπλότυπο και διαγράφεται."""
+    from PySide6.QtWidgets import QApplication
+
+    from timologio.gui.online_only import OnlineOnlyDialog
+
+    QApplication.instance() or QApplication([])
+    settings = Settings(data_dir=tmp_path / "data")
+    row = viewer_only_documents(conn)[0]
+    dialog = OnlineOnlyDialog(conn, settings, [row])
+
+    downloads = tmp_path / "dl"
+    downloads.mkdir()
+    dialog._downloads = downloads
+    source = downloads / "κατεβασμένο.pdf"
+    source.write_bytes(b"%PDF-1.4 " + b"x" * 500 + b"\n%%EOF")
+
+    dialog._watch_mark = row["mark"]
+    dialog._file_pdf(source)
+
+    # Το διπλότυπο έφυγε από τις Λήψεις…
+    assert not source.exists()
+    # …και το παραστατικό αρχειοθετήθηκε (Ελήφθη).
+    st = conn.execute(
+        "SELECT status FROM documents WHERE mark=?", (row["mark"],)
+    ).fetchone()
+    assert st["status"] == "downloaded"
+    assert dialog.filed_count == 1
+
+
 def test_online_only_dialog_order_and_selection(
     conn: sqlite3.Connection, tmp_path: Path
 ) -> None:

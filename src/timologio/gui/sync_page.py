@@ -78,6 +78,7 @@ class SyncPage(QWidget):
     sync_requested = Signal()
     cancel_requested = Signal()
     selection_changed = Signal(int)
+    refresh_requested = Signal()
 
     def __init__(self, prefs: QSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -245,6 +246,12 @@ class SyncPage(QWidget):
             button.setToolTip(tip)
             button.clicked.connect(lambda _=False, v=value: self._check_all(v))
             head.addWidget(button)
+
+        self.btn_refresh = QPushButton("  Ανανέωση")
+        self.btn_refresh.setIcon(icon("refresh", CURRENT.muted))
+        self.btn_refresh.setToolTip("Ξαναδιαβάζει τη λίστα πελατών από τη βάση")
+        self.btn_refresh.clicked.connect(self.refresh_requested.emit)
+        head.addWidget(self.btn_refresh)
         root.addLayout(head)
 
         self.table = QTableWidget(0, len(_COLS))
@@ -429,6 +436,7 @@ class SyncPage(QWidget):
 
     def restyle(self) -> None:
         self.btn_sync.setIcon(icon("download", CURRENT.on_accent))
+        self.btn_refresh.setIcon(icon("refresh", CURRENT.muted))
         self.title_icon.setPixmap(
             icon("download", CURRENT.accent, 24).pixmap(QSize(24, 24))
         )
@@ -443,4 +451,5 @@ class SyncPage(QWidget):
         self.chk_income.setEnabled(not running)
         self.chk_expense.setEnabled(not running)
         self.chk_smart.setEnabled(not running)
+        self.btn_refresh.setEnabled(not running)
         self.table.setEnabled(not running)
