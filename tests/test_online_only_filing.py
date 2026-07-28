@@ -45,8 +45,14 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 
 def test_save_online_only_pdf_files_and_marks_downloaded(
-    conn: sqlite3.Connection, tmp_path: Path
+    conn: sqlite3.Connection, tmp_path: Path, monkeypatch
 ) -> None:
+    # Ο φάκελος του pytest (όνομα = όνομα του test) είναι πολύ μακρύς· κοντά στο
+    # όριο MAX_PATH το target_path κόβει σωστά την επωνυμία, αλλά τότε ο έλεγχος
+    # ακριβούς ονόματος γίνεται εύθραυστος (έσπαγε μόλις ο μετρητής του pytest
+    # έφτανε τα 3 ψηφία). Ανεβάζουμε το budget ώστε το test να ελέγχει ΜΟΝΟ το
+    # σχήμα ονομάτων, όχι τη λογική συρρίκνωσης για MAX_PATH (που έχει δικό της test).
+    monkeypatch.setattr("timologio.download.storage._PATH_BUDGET", 4096)
     settings = Settings(data_dir=tmp_path / "data")
     row = viewer_only_documents(conn)[0]
 

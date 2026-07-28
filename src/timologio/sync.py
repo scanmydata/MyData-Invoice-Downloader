@@ -213,12 +213,26 @@ def _backoff(attempt: int, settings: Settings, retry_after: float | None = None)
     return (datetime.now() + timedelta(seconds=delay)).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _gr_to_iso(value: str) -> str:
+    """«dd/MM/yyyy» -> «yyyy-MM-dd» για σύγκριση με το issue_date της βάσης.
+
+    Ανθεκτικό: ό,τι δεν είναι έγκυρη ημερομηνία γυρίζει κενό (χωρίς φίλτρο).
+    """
+    try:
+        return datetime.strptime(value.strip(), "%d/%m/%Y").strftime("%Y-%m-%d")
+    except (ValueError, AttributeError):
+        return ""
+
+
 def download_pending(
     conn: sqlite3.Connection,
     client: Client,
     settings: Settings,
     *,
     stats: RunStats,
+    unclassified_expenses_only: bool = False,
+    date_from: str = "",
+    date_to: str = "",
     progress: ProgressFn = _noop,
     should_cancel: Callable[[], bool] | None = None,
 ) -> None:
@@ -227,12 +241,21 @@ def download_pending(
     Τα workers δεν αγγίζουν sqlite: επιστρέφουν αποτέλεσμα και ο βρόχος εδώ
     (single writer) γράφει.
 
+    Με ``unclassified_expenses_only`` (έξυπνη λήψη) κατεβαίνουν μόνο τα PDF των
+    αχαρακτήριστων εξόδων στο επιλεγμένο διάστημα — πολύ πιο γρήγορα.
+
     Η ακύρωση σταματά ΑΜΕΣΩΣ το πρόγραμμα εργασιών: παύουμε να καταναλώνουμε
     αποτελέσματα και ακυρώνουμε όσα δεν ξεκίνησαν (``cancel_futures``). Οι λίγες
     μεταφορτώσεις που τρέχουν ήδη ολοκληρώνονται στο παρασκήνιο — δεν περιμένουμε.
     """
     assert client.id is not None
-    rows = repo.pending_documents(conn, client.id)
+    rows = repo.pending_documents(
+        conn, client.id,
+        unclassified_expenses_only=unclassified_expenses_only,
+        client_vat=client.vat,
+        date_from_iso=_gr_to_iso(date_from) if unclassified_expenses_only else "",
+        date_to_iso=_gr_to_iso(date_to) if unclassified_expenses_only else "",
+    )
     if not rows:
         return
 
@@ -410,6 +433,7 @@ def sync_client(
     incremental: bool = True,
     directions: Sequence[Direction] = BOTH_WAYS,
     use_vies: bool = True,
+    unclassified_expenses_only: bool = False,
     progress: ProgressFn = _noop,
     should_cancel: Callable[[], bool] | None = None,
 ) -> RunStats:
@@ -484,8 +508,12 @@ def sync_client(
             (client.id,),
         ).fetchone()["c"]
     )
-    download_pending(conn, client, settings, stats=stats, progress=progress,
-                     should_cancel=should_cancel)
+    download_pending(
+        conn, client, settings, stats=stats,
+        unclassified_expenses_only=unclassified_expenses_only,
+        date_from=date_from, date_to=date_to,
+        progress=progress, should_cancel=should_cancel,
+    )
     return stats
 
 
@@ -532,6 +560,7 @@ def _render_viewer_batch(
     timeout: float,
     progress: ProgressFn,
     should_cancel: Callable[[], bool] | None,
+    on_done: Callable[[], None] | None = None,
 ) -> tuple[int, int, list[sqlite3.Row]]:
     """Αποδίδει μια παρτίδα «μόνο online» **σειριακά, με έναν browser**.
 
@@ -588,11 +617,15 @@ def _render_viewer_batch(
                 # Κανένας browser δεν άνοιξε — δεν έχει νόημα να δοκιμάσουμε τις
                 # υπόλοιπες γραμμές. Μένουν «μόνο online».
                 failed += 1
+                if on_done is not None:
+                    on_done()
                 progress(f"  ✗ {label}: σφάλμα browser (δοκιμάστηκαν όλοι)")
                 remaining.extend(rows[i + 1:])
                 break
             except HeadlessError as exc:
                 failed += 1
+                if on_done is not None:
+                    on_done()
                 log.warning("Render απέτυχε (%s): %s", row["mark"], exc)
                 progress(f"  ✗ {label}: σφάλμα browser")
                 continue
@@ -609,6 +642,8 @@ def _render_viewer_batch(
             )
             conn.commit()
             saved += 1
+            if on_done is not None:
+                on_done()
             progress(f"  ✓ {label}: PDF ({size:,} B)")
     finally:
         if renderer is not None:
@@ -626,6 +661,7 @@ def _direct_fetch_batch(
     *,
     progress: ProgressFn,
     should_cancel: Callable[[], bool] | None,
+    on_done: Callable[[], None] | None = None,
 ) -> tuple[int, list[sqlite3.Row]]:
     """Δοκιμάζει **άμεση** λήψη PDF πριν καν ανοίξει browser.
 
@@ -660,6 +696,8 @@ def _direct_fetch_batch(
             )
             conn.commit()
             saved += 1
+            if on_done is not None:
+                on_done()  # τερματικό: αυτό δεν πάει στα browser περάσματα
             progress(f"  ✓ {label}: PDF άμεσα από τον πάροχο ({size:,} B)")
     finally:
         downloader.close()
@@ -672,6 +710,7 @@ def download_viewer_only(
     *,
     vats: list[str] | None = None,
     progress: ProgressFn = _noop,
+    count: Callable[[int, int], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
     headed_fallback: bool = True,
 ) -> tuple[int, int, int]:
@@ -694,12 +733,27 @@ def download_viewer_only(
     if not rows:
         return 0, 0, 0
 
+    # Ποσοστό προόδου: κάθε γραμμή μετριέται μία φορά, όταν φύγει οριστικά από
+    # τον αγωγό (αποθηκεύτηκε ή απέτυχε). Όσες μένουν «μόνο online» τις μετράμε
+    # στο τέλος, ώστε η μπάρα να φτάνει στο 100% όταν ολοκληρωθεί η εργασία.
+    total = len(rows)
+    done = 0
+
+    def bump() -> None:
+        nonlocal done
+        done += 1
+        if count is not None:
+            count(done, total)
+
     # Πέρασμα 0: άμεση λήψη PDF (Megasoft κ.ά.) — γρήγορο, χωρίς browser.
     saved, remaining = _direct_fetch_batch(
         conn, settings, rows, progress=progress, should_cancel=should_cancel,
+        on_done=bump,
     )
     failed = 0
     if not remaining:
+        if count is not None:
+            count(total, total)
         return saved, 0, failed
 
     # Τα browser περάσματα χρειάζονται Edge/Chrome. Αν λείπει, ό,τι δεν πιάστηκε
@@ -708,12 +762,14 @@ def download_viewer_only(
         for row in remaining:
             label = row["client_label"] or row["client_vat"]
             progress(f"  ⧉ {label}: παραμένει μόνο online (χωρίς Edge/Chrome)")
+        if count is not None:
+            count(total, total)
         return saved, len(remaining), failed
 
     # Πέρασμα 1: headless, σειριακά με έναν browser (σταθερό, χαμηλή προτεραιότητα).
     s1, failed, remaining = _render_viewer_batch(
         conn, settings, remaining, headed=False, patient=False, timeout=30.0,
-        progress=progress, should_cancel=should_cancel,
+        progress=progress, should_cancel=should_cancel, on_done=bump,
     )
     saved += s1
 
@@ -728,7 +784,7 @@ def download_viewer_only(
         # προηγούμενο — πιο ξεκάθαρο από πολλά παράθυρα μαζί.
         s2, f2, remaining = _render_viewer_batch(
             conn, settings, remaining, headed=True, patient=True, timeout=150.0,
-            progress=progress, should_cancel=should_cancel,
+            progress=progress, should_cancel=should_cancel, on_done=bump,
         )
         saved += s2
         failed += f2
@@ -736,6 +792,8 @@ def download_viewer_only(
     for row in remaining:
         label = row["client_label"] or row["client_vat"]
         progress(f"  ⧉ {label}: παραμένει μόνο online")
+    if count is not None:
+        count(total, total)  # φτάνει στο 100% όταν ολοκληρωθεί η εργασία
     return saved, len(remaining), failed
 
 

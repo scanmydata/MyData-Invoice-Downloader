@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -44,6 +44,29 @@ REFRESH_MS = 10_000
 
 def _dot(online: bool) -> str:
     return "🟢" if online else "⚪"
+
+
+class _BrowserProbeWorker(QObject):
+    """Δοκιμάζει τους browsers για headless λειτουργία, εκτός GUI thread.
+
+    Το άνοιγμα browser είναι αργό και μπλοκάρει· εδώ τρέχει σε δικό του thread
+    και επιστρέφει τα αποτελέσματα ως απλή λίστα από πλειάδες.
+    """
+
+    done = Signal(list)  # list[(name, ok, detail)]
+    failed = Signal(str)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            from ..download import headless
+
+            results = [
+                (p.name, p.ok, p.detail) for p in headless.probe_browsers()
+            ]
+            self.done.emit(results)
+        except Exception as exc:  # noqa: BLE001 — να μη σκάει σιωπηλά το thread
+            self.failed.emit(str(exc))
 
 
 class ControlPanel(QWidget):
@@ -105,6 +128,16 @@ class ControlPanel(QWidget):
         title.setObjectName("h1")
         row.addWidget(title)
         row.addStretch()
+
+        self.btn_browser = QPushButton("Δοκιμή browser")
+        self.btn_browser.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_browser.setToolTip(
+            "Δοκιμάζει τους εγκατεστημένους browsers (Edge/Chrome) σε αόρατη\n"
+            "λειτουργία, όπως τους χρησιμοποιεί η αυτόματη λήψη «μόνο online».\n"
+            "Δείχνει αν θα δουλέψει στο μηχάνημά σας."
+        )
+        self.btn_browser.clicked.connect(self.test_browsers)
+        row.addWidget(self.btn_browser)
 
         self.btn_updates = QPushButton("Έλεγχος για ενημερώσεις")
         self.btn_updates.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -168,6 +201,73 @@ class ControlPanel(QWidget):
             "Ελέγξτε τη σύνδεσή σας στο internet και δοκιμάστε ξανά, ή δείτε "
             f'απευθείας τη <a href="{updates.RELEASES_URL}">σελίδα εκδόσεων</a>.'
             f"<br><br><span style='color:gray'>{detail[:200]}</span>",
+        )
+
+    # ------------------------------------------------------- δοκιμή browser
+    def test_browsers(self) -> None:
+        """Χειροκίνητη δοκιμή των browsers για headless (κουμπί).
+
+        Τρέχει σε δικό του thread γιατί ανοίγει πραγματικούς browsers και αργεί.
+        """
+        self.btn_browser.setEnabled(False)
+        self.btn_browser.setText("Δοκιμή…")
+
+        self._probe_thread = QThread(self)
+        self._probe_worker = _BrowserProbeWorker()
+        self._probe_worker.moveToThread(self._probe_thread)
+        self._probe_thread.started.connect(self._probe_worker.run)
+        self._probe_worker.done.connect(self._on_browser_probe_done)
+        self._probe_worker.failed.connect(self._on_browser_probe_failed)
+        self._probe_thread.start()
+
+    def _stop_probe_thread(self) -> None:
+        thread = getattr(self, "_probe_thread", None)
+        if thread is not None:
+            thread.quit()
+            thread.wait(3000)
+        self._probe_thread = None
+        self._probe_worker = None
+        self.btn_browser.setEnabled(True)
+        self.btn_browser.setText("Δοκιμή browser")
+
+    def _on_browser_probe_done(self, results: list) -> None:
+        self._stop_probe_thread()
+        if not results:
+            QMessageBox.warning(
+                self, "Δοκιμή browser",
+                "Δεν βρέθηκε Microsoft Edge ή Google Chrome στον υπολογιστή.\n\n"
+                "Η αυτόματη λήψη «μόνο online» χρειάζεται έναν από τους δύο. Το "
+                "Edge υπάρχει προεγκατεστημένο σε κάθε Windows 10/11 — αν λείπει, "
+                "εγκαταστήστε Edge ή Chrome, ή χρησιμοποιήστε «Μέσω του browser "
+                "μου».",
+            )
+            return
+        lines = [
+            f"{'✓' if ok else '✗'} <b>{name}</b> — {detail}"
+            for name, ok, detail in results
+        ]
+        any_ok = any(ok for _, ok, _ in results)
+        color = CURRENT.ok if any_ok else CURRENT.bad
+        head = (
+            "Η αυτόματη λήψη «μόνο online» θα δουλέψει."
+            if any_ok else
+            "Κανένας browser δεν απέδωσε PDF."
+        )
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information if any_ok else QMessageBox.Icon.Warning)
+        box.setWindowTitle("Δοκιμή browser")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(
+            f'<div style="color:{color};"><b>{head}</b></div><br>'
+            + "<br>".join(lines)
+        )
+        box.exec()
+
+    def _on_browser_probe_failed(self, detail: str) -> None:
+        self._stop_probe_thread()
+        QMessageBox.warning(
+            self, "Δοκιμή browser",
+            f"Η δοκιμή δεν ολοκληρώθηκε.\n\n{detail[:300]}",
         )
 
     def _identity_box(self) -> QWidget:

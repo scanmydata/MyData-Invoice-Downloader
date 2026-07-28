@@ -26,8 +26,10 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -114,6 +116,71 @@ def available() -> bool:
     except ImportError:
         return False
     return find_browser() is not None
+
+
+def browser_name(path: Path) -> str:
+    """Φιλικό όνομα από τη διαδρομή του exe (msedge -> Microsoft Edge κ.λπ.)."""
+    stem = path.stem.lower()
+    if "edge" in stem:
+        return "Microsoft Edge"
+    if "chrome" in stem:
+        return "Google Chrome"
+    return path.stem
+
+
+@dataclass(frozen=True)
+class BrowserProbe:
+    """Αποτέλεσμα δοκιμής ενός browser για τη λειτουργία headless."""
+
+    name: str
+    path: Path
+    ok: bool
+    detail: str
+
+
+def probe_browsers(*, timeout: float = 25.0) -> list[BrowserProbe]:
+    """Δοκιμάζει ΚΑΘΕ διαθέσιμο browser σε πραγματική headless λειτουργία.
+
+    Για κάθε Edge/Chrome: τον ανοίγει αόρατα, αποδίδει μια απλή σελίδα σε PDF και
+    ελέγχει ότι πήρε έγκυρο PDF. Έτσι ο χρήστης βλέπει από τον Πίνακα ελέγχου αν
+    η αυτόματη λήψη «μόνο online» θα δουλέψει στο μηχάνημά του, χωρίς να χρειαστεί
+    να έχει πραγματικά παραστατικά. Είναι αργό (ανοίγει browsers) — τρέξτε το
+    εκτός του GUI thread.
+    """
+    browsers = find_browsers()
+    if not browsers:
+        return []
+
+    # data: URL με αρκετό κείμενο ώστε να περάσει το κατώφλι στοιχειοθέτησης.
+    html = (
+        "<html><body><h1>Timologio Downloader</h1><p>"
+        + ("δοκιμή λειτουργίας headless. " * 40)
+        + "</p></body></html>"
+    )
+    url = "data:text/html;charset=utf-8," + urllib.parse.quote(html)
+
+    results: list[BrowserProbe] = []
+    for browser in browsers:
+        name = browser_name(browser)
+        try:
+            renderer = HeadlessRenderer(browser=browser, launch_timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 — θέλουμε να το αναφέρουμε, όχι να σκάσουμε
+            results.append(BrowserProbe(name, browser, False, f"δεν άνοιξε: {exc}"))
+            continue
+        try:
+            pdf = renderer.render_pdf(url, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001
+            results.append(BrowserProbe(name, browser, False, f"σφάλμα απόδοσης: {exc}"))
+            continue
+        finally:
+            renderer.close()
+        if pdf and pdf.startswith(b"%PDF"):
+            results.append(BrowserProbe(name, browser, True,
+                                        f"εντάξει — απέδωσε PDF ({len(pdf):,} bytes)"))
+        else:
+            results.append(BrowserProbe(name, browser, False,
+                                        "άνοιξε αλλά δεν απέδωσε PDF"))
+    return results
 
 
 class HeadlessRenderer:

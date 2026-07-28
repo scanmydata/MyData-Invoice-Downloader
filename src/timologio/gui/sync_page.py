@@ -174,6 +174,23 @@ class SyncPage(QWidget):
         kinds.addWidget(self.chk_expense)
         kinds.addStretch()
         box.addLayout(kinds)
+
+        # Έξυπνη (γρήγορη) λήψη: κατεβάζει PDF μόνο για τα αχαρακτήριστα έξοδα
+        # του διαστήματος — ό,τι δηλαδή χρειάζεται ο λογιστής για να χαρακτηρίσει.
+        smart = QHBoxLayout()
+        smart.setSpacing(7)
+        self.chk_smart = QCheckBox("Έξυπνη λήψη: μόνο αχαρακτήριστα έξοδα")
+        self.chk_smart.setToolTip(
+            "Γρήγορη λήψη: κατεβάζει PDF ΜΟΝΟ για τα έξοδα που είναι ακόμη\n"
+            "αχαρακτήριστα, μέσα στο επιλεγμένο διάστημα — αυτά ακριβώς που\n"
+            "χρειάζεστε για να χαρακτηρίσετε.\n\n"
+            "Τα έσοδα και τα ήδη χαρακτηρισμένα δεν κατεβαίνουν, οπότε η\n"
+            "διαδικασία τελειώνει πολύ πιο γρήγορα. Τα υπόλοιπα PDF μπορείτε\n"
+            "να τα κατεβάσετε αργότερα με κανονική λήψη."
+        )
+        smart.addWidget(self.chk_smart)
+        smart.addStretch()
+        box.addLayout(smart)
         root.addWidget(card)
 
         # --- ποιοι πελάτες
@@ -249,6 +266,10 @@ class SyncPage(QWidget):
         self.date_to.set_gr(end.strftime("%d/%m/%Y"))
 
     # ------------------------------------------------------------- επιλογές
+    def smart_expenses_only(self) -> bool:
+        """Έξυπνη λήψη: PDF μόνο για τα αχαρακτήριστα έξοδα του διαστήματος."""
+        return self.chk_smart.isChecked()
+
     def directions(self) -> tuple[Direction, ...]:
         """Ποιες κλήσεις της ΑΑΔΕ θα γίνουν, βάσει των δύο κουτιών."""
         out: list[Direction] = []
@@ -421,4 +442,5 @@ class SyncPage(QWidget):
         self.chk_full.setEnabled(not running)
         self.chk_income.setEnabled(not running)
         self.chk_expense.setEnabled(not running)
+        self.chk_smart.setEnabled(not running)
         self.table.setEnabled(not running)

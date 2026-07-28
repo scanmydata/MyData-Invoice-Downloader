@@ -456,19 +456,42 @@ def advance_cursor(
     )
 
 
-def pending_documents(conn: sqlite3.Connection, client_id: int) -> list[sqlite3.Row]:
-    """Ό,τι αξίζει προσπάθεια τώρα: νέα + retryable που ωρίμασαν."""
-    return list(
-        conn.execute(
-            """SELECT * FROM documents
+def pending_documents(
+    conn: sqlite3.Connection,
+    client_id: int,
+    *,
+    unclassified_expenses_only: bool = False,
+    client_vat: str = "",
+    date_from_iso: str = "",
+    date_to_iso: str = "",
+) -> list[sqlite3.Row]:
+    """Ό,τι αξίζει προσπάθεια τώρα: νέα + retryable που ωρίμασαν.
+
+    Με ``unclassified_expenses_only`` (έξυπνη λήψη) περιορίζεται σε **αχαρακτήριστα
+    έξοδα** (εκδότης ≠ ο πελάτης, classification='unclassified') μέσα στο διάστημα
+    ``[date_from_iso, date_to_iso]`` — έτσι κατεβαίνουν μόνο τα PDF που χρειάζεται
+    ο λογιστής για να χαρακτηρίσει, και η λήψη τρέχει πολύ πιο γρήγορα.
+    """
+    sql = [
+        """SELECT * FROM documents
                WHERE client_id=? AND downloading_invoice_url <> ''
                  AND (status='pending'
                       OR (status='failed_retryable'
-                          AND (next_retry_at='' OR next_retry_at <= datetime('now'))))
-               ORDER BY issue_date, mark""",
-            (client_id,),
-        )
-    )
+                          AND (next_retry_at='' OR next_retry_at <= datetime('now'))))"""
+    ]
+    params: list[object] = [client_id]
+    if unclassified_expenses_only:
+        # Έξοδο = ο εκδότης είναι κάποιος άλλος, όχι ο πελάτης.
+        sql.append("AND classification='unclassified' AND issuer_vat <> ?")
+        params.append(client_vat)
+        if date_from_iso:
+            sql.append("AND issue_date >= ?")
+            params.append(date_from_iso)
+        if date_to_iso:
+            sql.append("AND issue_date <= ?")
+            params.append(date_to_iso)
+    sql.append("ORDER BY issue_date, mark")
+    return list(conn.execute("\n".join(sql), params))
 
 
 def viewer_only_documents(

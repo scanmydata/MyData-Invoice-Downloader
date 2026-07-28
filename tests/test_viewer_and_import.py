@@ -187,6 +187,53 @@ def test_find_browser_and_available_never_crash():
     assert isinstance(headless.available(), bool)
 
 
+def test_browser_name_maps_edge_and_chrome():
+    from pathlib import Path
+
+    from timologio.download import headless
+
+    assert headless.browser_name(Path(r"C:\x\msedge.exe")) == "Microsoft Edge"
+    assert headless.browser_name(Path(r"C:\x\chrome.exe")) == "Google Chrome"
+
+
+def test_probe_browsers_reports_ok_and_failure(monkeypatch):
+    """Η δοκιμή browser αναφέρει ανά browser: όποιος αποδίδει PDF = ✓, όποιος
+    δεν ανοίγει = ✗ — χωρίς να σκάει."""
+    from pathlib import Path
+
+    from timologio.download import headless
+
+    edge = Path(r"C:\Edge\msedge.exe")
+    chrome = Path(r"C:\Chrome\chrome.exe")
+    monkeypatch.setattr(headless, "find_browsers", lambda: [edge, chrome])
+
+    class FakeRenderer:
+        def __init__(self, browser=None, **k):
+            if browser == chrome:
+                raise headless.HeadlessError("δεν ξεκίνησε")
+            self._browser = browser
+
+        def render_pdf(self, url, **k):
+            return b"%PDF-1.4\nok\n%%EOF"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(headless, "HeadlessRenderer", FakeRenderer)
+    results = headless.probe_browsers(timeout=1.0)
+    by_name = {r.name: r for r in results}
+    assert by_name["Microsoft Edge"].ok is True
+    assert by_name["Google Chrome"].ok is False
+    assert "δεν άνοιξε" in by_name["Google Chrome"].detail
+
+
+def test_probe_browsers_empty_when_none(monkeypatch):
+    from timologio.download import headless
+
+    monkeypatch.setattr(headless, "find_browsers", lambda: [])
+    assert headless.probe_browsers() == []
+
+
 def test_download_viewer_only_saves_renderable_keeps_rest(conn, tmp_path, monkeypatch):
     """Ο renderer επιστρέφει PDF για τη μία σελίδα και None για την άλλη:
     η πρώτη γίνεται downloaded με αρχείο, η δεύτερη μένει viewer_only."""
@@ -231,8 +278,16 @@ def test_download_viewer_only_saves_renderable_keeps_rest(conn, tmp_path, monkey
     monkeypatch.setattr(headless, "HeadlessRenderer", FakeRenderer)
 
     settings = Settings(data_dir=tmp_path)
-    saved, skipped, failed = sync.download_viewer_only(conn, settings)
+    counts: list[tuple[int, int]] = []
+    saved, skipped, failed = sync.download_viewer_only(
+        conn, settings, count=lambda d, t: counts.append((d, t))
+    )
     assert (saved, skipped, failed) == (1, 1, 0)
+    # Το ποσοστό είναι μονότονο, δεν ξεπερνά το σύνολο και φτάνει στο 100%.
+    assert counts, "δεν ήρθε καμία ενημέρωση προόδου"
+    assert all(0 <= d <= t == 2 for d, t in counts)
+    assert [d for d, _ in counts] == sorted(d for d, _ in counts)
+    assert counts[-1] == (2, 2)
 
     rows = {r["mark"]: r for r in conn.execute(
         "SELECT mark,status,local_path,file_bytes FROM documents")}

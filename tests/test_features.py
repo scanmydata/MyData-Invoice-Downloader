@@ -199,6 +199,61 @@ def test_updater_script_waits_installs_relaunches():
     assert "installer exit=" in script
 
 
+def test_updater_script_self_deletes_scheduled_task():
+    """Αν μας ξεκίνησε το Task Scheduler, το task σβήνεται στην αρχή του script
+    ώστε να μη μένει εγγεγραμμένο· αν όχι, το /Delete αποτυγχάνει σιωπηλά."""
+    from timologio.updates import UPDATE_TASK_NAME, build_updater_script
+
+    script = build_updater_script(
+        pid=1, setup=Path(r"C:\s.exe"), app_exe=Path(r"C:\a\App.exe"),
+        data_dir=Path(r"C:\d"), role="standalone", tray=True,
+    )
+    assert f"schtasks.exe /Delete /TN '{UPDATE_TASK_NAME}' /F" in script
+    # Το σβήσιμο γίνεται ΠΡΙΝ τρέξει ο installer (στην αρχή, όχι στο τέλος).
+    assert script.index("/Delete") < script.index("running installer")
+
+
+def test_schedule_via_task_builds_correct_schtasks_call(monkeypatch):
+    """Ο φρουρός auto-update περνά από Task Scheduler: /Create με το script και
+    μετά /Run για άμεση πυροδότηση — έξω από το job της εφαρμογής."""
+    from timologio import updates
+
+    calls: list[list[str]] = []
+
+    class _R:
+        returncode = 0
+        stderr = b""
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return _R()
+
+    monkeypatch.setattr(updates.subprocess, "run", fake_run)
+    ok = updates._schedule_via_task("powershell.exe", Path(r"C:\Temp\u.ps1"))
+    assert ok is True
+    assert any("/Create" in c and updates.UPDATE_TASK_NAME in c for c in calls)
+    assert any("/Run" in c and updates.UPDATE_TASK_NAME in c for c in calls)
+    # Το /Create προηγείται του /Run.
+    create_i = next(i for i, c in enumerate(calls) if "/Create" in c)
+    run_i = next(i for i, c in enumerate(calls) if "/Run" in c)
+    assert create_i < run_i
+
+
+def test_launch_detached_falls_back_to_popen_when_task_fails(monkeypatch):
+    """Αν το schtasks δεν είναι διαθέσιμο, πέφτουμε στον detached-process τρόπο —
+    ποτέ δεν μένουμε χωρίς εκκίνηση σιωπηλά."""
+    from timologio import updates
+
+    monkeypatch.setattr(updates, "_schedule_via_task", lambda *a, **k: False)
+    used: dict[str, bool] = {}
+    monkeypatch.setattr(
+        updates, "_launch_via_popen",
+        lambda *a, **k: used.setdefault("popen", True),
+    )
+    assert updates.launch_detached(Path(r"C:\Temp\u.ps1")) is True
+    assert used.get("popen") is True
+
+
 def test_updater_script_omits_dir_when_not_given():
     from timologio.updates import build_updater_script
 

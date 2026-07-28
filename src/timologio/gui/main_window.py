@@ -1517,6 +1517,7 @@ class MainWindow(QMainWindow):
             self.sync_page.date_to.gr(),
             self.sync_page.chk_full.isChecked(),
             directions,
+            unclassified_expenses_only=self.sync_page.smart_expenses_only(),
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -1645,10 +1646,21 @@ class MainWindow(QMainWindow):
         self._hl_worker.moveToThread(self._hl_thread)
         self._hl_thread.started.connect(self._hl_worker.run)
         self._hl_worker.message.connect(self._on_headless_message)
+        self._hl_worker.progress.connect(self._on_headless_progress)
         self._hl_worker.finished.connect(self._on_headless_finished)
         self._hl_worker.failed.connect(self._on_headless_failed)
         self._hl_dialog.canceled.connect(self._on_headless_cancel)
         self._hl_thread.start()
+
+    def _on_headless_progress(self, done: int, total: int) -> None:
+        """Ποσοστό στην μπάρα του popup της αυτόματης μόνο-online λήψης."""
+        dialog = getattr(self, "_hl_dialog", None)
+        if dialog is None:
+            return
+        dialog.setMaximum(total)
+        dialog.setValue(done)
+        pct = int(done * 100 / total) if total else 0
+        dialog.setLabelText(f"Λήψη μόνο-online…  {done} / {total}  ({pct}%)")
 
     def _on_headless_cancel(self) -> None:
         """Ακύρωση της μόνο-online λήψης — γίνεται αισθητή σε <1s."""
@@ -1691,11 +1703,9 @@ class MainWindow(QMainWindow):
                 )
 
     def _on_headless_message(self, text: str) -> None:
-        if self._hl_dialog is not None:
-            # Κάθε μήνυμα αντιστοιχεί σε ένα παραστατικό — προχωρά η μπάρα.
-            self._hl_dialog.setValue(min(self._hl_dialog.value() + 1,
-                                         self._hl_dialog.maximum()))
-            self._hl_dialog.setLabelText(text.strip().lstrip("✓⧉✗ "))
+        # Η μπάρα και το ποσοστό οδηγούνται πλέον από το ακριβές
+        # _on_headless_progress (done/total)· εδώ κρατάμε μόνο το ημερολόγιο,
+        # ώστε τα δύο να μη «μαλώνουν» για την ίδια ετικέτα.
         self._log(text)
 
     def _teardown_headless(self) -> None:
@@ -1815,10 +1825,13 @@ class MainWindow(QMainWindow):
                 "αυτόματα επιλεγμένος και τσεκαρισμένος.\n\n"
                 "Η εφαρμογή ζητά μόνο ό,τι είναι νεότερο από την προηγούμενη "
                 "φορά, οπότε η δεύτερη λήψη είναι σχεδόν ακαριαία.\n\n"
+                "Βιάζεστε; Με την «Έξυπνη λήψη» κατεβαίνουν PDF μόνο για τα "
+                "αχαρακτήριστα έξοδα του διαστήματος — ό,τι χρειάζεστε για να "
+                "χαρακτηρίσετε — και η λήψη τελειώνει πολύ πιο γρήγορα.\n\n"
                 "Για παραστατικά που ο πάροχος δείχνει «μόνο online», το «Λήψη "
                 "μόνο-online» δίνει δύο τρόπους: «Αυτόματα» (αόρατα, χωρίς να "
-                "ανοίγει παράθυρο) και «Μέσω του browser σας» (οδηγός για όσα "
-                "ζητούν έλεγχο «είστε άνθρωπος»).",
+                "ανοίγει παράθυρο, με μπάρα προόδου και ποσοστό) και «Μέσω του "
+                "browser σας» (οδηγός για όσα ζητούν έλεγχο «είστε άνθρωπος»).",
                 lambda: self.sync_page,
                 self._go_sync,
             ),
@@ -1842,7 +1855,9 @@ class MainWindow(QMainWindow):
                 "τώρα.\n\n"
                 "Ο πίνακας «Συνδέσεις» δείχνει κάθε υπολογιστή που μοιράζεται την "
                 "ίδια βάση (πράσινο = ενεργός τώρα). Το «Έλεγχος σύνδεσης» "
-                "επιβεβαιώνει φάκελο, δικαιώματα και βάση, και λέει τι φταίει.",
+                "επιβεβαιώνει φάκελο, δικαιώματα και βάση, και λέει τι φταίει.\n\n"
+                "Το «Δοκιμή browser» ανοίγει αόρατα τον Edge/Chrome και ελέγχει "
+                "ότι η αυτόματη λήψη «μόνο online» θα δουλέψει στο μηχάνημά σας.",
                 lambda: self.menu.button("control"),
                 lambda: self._show_page("control"),
             ),

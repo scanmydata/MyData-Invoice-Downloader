@@ -40,6 +40,7 @@ class SyncWorker(QObject):
         full: bool,
         directions: Sequence[Direction] | None = None,
         use_vies: bool = True,
+        unclassified_expenses_only: bool = False,
     ) -> None:
         super().__init__()
         self._vats = vats
@@ -50,6 +51,7 @@ class SyncWorker(QObject):
             Direction.INCOMING, Direction.OUTGOING
         )
         self._use_vies = use_vies
+        self._unclassified_expenses_only = unclassified_expenses_only
         self._cancel = threading.Event()
 
     def cancel(self) -> None:
@@ -102,6 +104,7 @@ class SyncWorker(QObject):
                     incremental=not self._full,
                     directions=self._directions,
                     use_vies=self._use_vies,
+                    unclassified_expenses_only=self._unclassified_expenses_only,
                     progress=lambda m: self.message.emit(m),
                     should_cancel=self._cancel.is_set,
                 )
@@ -140,6 +143,7 @@ class HeadlessWorker(QObject):
     """
 
     message = Signal(str)
+    progress = Signal(int, int)       # done, total — για ποσοστό στο popup
     finished = Signal(int, int, int)  # saved, skipped, failed
     failed = Signal(str)
 
@@ -168,6 +172,7 @@ class HeadlessWorker(QObject):
                 conn, settings, vats=self._vats,
                 headed_fallback=self._headed_fallback,
                 progress=lambda m: self.message.emit(m),
+                count=lambda d, t: self.progress.emit(d, t),
                 should_cancel=self._cancel.is_set,
             )
             conn.close()

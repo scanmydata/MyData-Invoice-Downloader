@@ -7,12 +7,23 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 OWNER_REPO = "scanmydata/MyData-Invoice-Downloader"
 API_URL = f"https://api.github.com/repos/{OWNER_REPO}/releases/latest"
 RELEASES_URL = f"https://github.com/{OWNER_REPO}/releases/latest"
+
+#: Όνομα του προσωρινού scheduled task που τρέχει την ενημέρωση. Το ίδιο όνομα
+#: το σβήνει το script στην αρχή του, ώστε να μη μένουν σκουπίδια στον
+#: χρονοπρογραμματιστή.
+UPDATE_TASK_NAME = "TimologioDownloaderUpdate"
 
 
 def parse_version(text: str) -> tuple[int, ...]:
@@ -156,6 +167,11 @@ def build_updater_script(
         "function L($m){ (\"[{0}] {1}\" -f (Get-Date -Format 'HH:mm:ss'), $m) | "
         "Out-File -FilePath $log -Append -Encoding utf8 }\n"
         f"L ('start pid={int(pid)}')\n"
+        # Αν μας ξεκίνησε το Task Scheduler, σβήσε το task αμέσως: έχει ήδη
+        # πυροδοτηθεί, δεν το χρειαζόμαστε άλλο, και δεν θέλουμε να μείνει
+        # εγγεγραμμένο. Αν μας ξεκίνησε αλλιώς (fallback), το /Delete απλώς
+        # αποτυγχάνει σιωπηλά.
+        f"schtasks.exe /Delete /TN '{UPDATE_TASK_NAME}' /F 2>$null | Out-Null\n"
         # Περίμενε πρώτα τη συγκεκριμένη διεργασία που ζήτησε την ενημέρωση…
         f"Wait-Process -Id {int(pid)} -Timeout 60\n"
         # …και μετά κάθε τυχόν άλλη ανοιχτή instance (π.χ. server + τερματικό στο
@@ -184,3 +200,96 @@ def build_updater_script(
         f"Start-Process -FilePath {q(app_exe)}\n"
         "L 'relaunched'\n"
     )
+
+
+def powershell_exe() -> str:
+    """Πλήρης διαδρομή του Windows PowerShell 5.1.
+
+    Το PATH δεν είναι εγγυημένο μέσα στο πακεταρισμένο περιβάλλον, οπότε ένα
+    σκέτο ``"powershell"`` μπορεί να μη βρεθεί.
+    """
+    full = (
+        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    )
+    return str(full) if full.exists() else "powershell"
+
+
+def launch_detached(script_path: Path) -> bool:
+    """Ξεκινά το PowerShell script της ενημέρωσης ΑΠΟΣΠΑΣΜΕΝΑ από την εφαρμογή,
+    ώστε να επιβιώσει του κλεισίματός της. Επιστρέφει ``True`` αν ξεκίνησε.
+
+    ΓΙΑΤΙ Task Scheduler και όχι απλό detached process: πολλά περιβάλλοντα βάζουν
+    την εφαρμογή σε **Job Object με kill-on-close**. Όταν κλείνει η εφαρμογή, το
+    job σκοτώνει ΚΑΙ κάθε παιδί-διεργασία — ακόμη και «detached». Το
+    ``CREATE_BREAKAWAY_FROM_JOB`` υποτίθεται ότι το λύνει, αλλά αν το job ΔΕΝ
+    επιτρέπει breakaway (μετρημένα, συμβαίνει), η δημιουργία διεργασίας αποτυγχάνει
+    και το script δεν τρέχει ΠΟΤΕ — «κατέβαινε αλλά δεν εγκαθιστούσε». Ένα
+    scheduled task τρέχει κάτω από την υπηρεσία του χρονοπρογραμματιστή, εντελώς
+    έξω από το job της εφαρμογής, οπότε επιβιώνει πάντα. Ο απλός detached τρόπος
+    μένει ως εφεδρεία για συστήματα όπου το schtasks είναι απενεργοποιημένο.
+    """
+    ps = powershell_exe()
+    if _schedule_via_task(ps, script_path):
+        log.info("Ενημέρωση: ξεκίνησε μέσω Task Scheduler.")
+        return True
+    log.warning("Ενημέρωση: το Task Scheduler απέτυχε — δοκιμή απευθείας.")
+    return _launch_via_popen(ps, script_path)
+
+
+def _schedule_via_task(powershell: str, script_path: Path) -> bool:
+    """Καταχωρεί ένα εφάπαξ task που τρέχει το script και το πυροδοτεί αμέσως."""
+    tr = (
+        f'"{powershell}" -NoProfile -ExecutionPolicy Bypass '
+        f'-WindowStyle Hidden -NonInteractive -File "{script_path}"'
+    )
+    # Το /ST είναι υποχρεωτικό αλλά το /Run το πυροδοτεί ούτως ή άλλως αμέσως·
+    # βάζουμε ένα έγκυρο μελλοντικό HH:MM για να μη γκρινιάξει το schtasks.
+    start_time = (datetime.now() + timedelta(minutes=1)).strftime("%H:%M")
+    try:
+        created = subprocess.run(
+            ["schtasks", "/Create", "/TN", UPDATE_TASK_NAME, "/TR", tr,
+             "/SC", "ONCE", "/ST", start_time, "/F"],
+            capture_output=True, timeout=20,
+        )
+        if created.returncode != 0:
+            log.warning("schtasks /Create: %s",
+                        created.stderr.decode("utf-8", "replace").strip())
+            return False
+        ran = subprocess.run(
+            ["schtasks", "/Run", "/TN", UPDATE_TASK_NAME],
+            capture_output=True, timeout=20,
+        )
+        if ran.returncode != 0:
+            log.warning("schtasks /Run: %s",
+                        ran.stderr.decode("utf-8", "replace").strip())
+            return False
+        return True
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("Task Scheduler μη διαθέσιμο: %s", exc)
+        return False
+
+
+def _launch_via_popen(powershell: str, script_path: Path) -> bool:
+    """Εφεδρεία: απευθείας detached process, με προσπάθεια breakaway από το job."""
+    cmd = [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass",
+           "-WindowStyle", "Hidden", "-File", str(script_path)]
+    detached = (
+        getattr(subprocess, "DETACHED_PROCESS", 0)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    )
+    create_breakaway_from_job = 0x01000000
+    try:
+        subprocess.Popen(
+            cmd, creationflags=detached | create_breakaway_from_job,
+            close_fds=True,
+        )
+        return True
+    except OSError:
+        log.warning("Breakaway from job απέτυχε — εκκίνηση χωρίς αυτό.")
+    try:
+        subprocess.Popen(cmd, creationflags=detached, close_fds=True)
+        return True
+    except OSError as exc:
+        log.error("Δεν ξεκίνησε το script ενημέρωσης: %s", exc)
+        return False
