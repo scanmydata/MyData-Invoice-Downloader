@@ -382,6 +382,7 @@ class OnlineOnlyDialog(QDialog):
             self._skipped.add(row["mark"])
             self._refresh()
             return
+        url = self._openable_url(url)
         self._snapshot = self._pdf_snapshot()
         self._open_ts = self._now()
         self._candidate = None
@@ -389,6 +390,17 @@ class OnlineOnlyDialog(QDialog):
         QDesktopServices.openUrl(QUrl(url))
         self._timer.start()
         self._refresh()
+
+    def _openable_url(self, url: str) -> str:
+        """Το URL που ανοίγουμε στον browser. Για eskap.gr προτιμούμε την
+        «καθαρή» εκτυπώσιμη σελίδα, ώστε ο χρήστης να αποθηκεύει το τιμολόγιο και
+        όχι τη σελίδα με τα μενού. Αν αποτύχει, ανοίγουμε το αρχικό."""
+        try:
+            from ..download.provider import eskap_print_url
+
+            return eskap_print_url(url) or url
+        except Exception:  # noqa: BLE001
+            return url
 
     def _skip_current(self) -> None:
         if self._watch_mark:
@@ -490,17 +502,35 @@ class OnlineOnlyDialog(QDialog):
         self._refresh()
         self.btn_open.setFocus()
 
-    def _delete_download(self, source: Path) -> None:
+    def _delete_download(self, source: Path, attempt: int = 0) -> None:
         """Σβήνει το πρωτότυπο από τις «Λήψεις» αφού αρχειοθετηθεί (διπλότυπο).
 
-        Ποτέ δεν σκάει: αν το αρχείο είναι κλειδωμένο ή έχει ήδη φύγει, απλώς το
-        αφήνουμε — δεν είναι λόγος να χαλάσει η αρχειοθέτηση που πέτυχε.
+        Στα Windows, μόλις αποθηκευτεί το PDF ο browser συχνά το κρατά **ανοιχτό**
+        (προεπισκόπηση εκτύπωσης ή καρτέλα PDF viewer), οπότε το πρώτο `unlink`
+        αποτυγχάνει με «file in use» — γι' αυτό «δεν σβηνόταν». Ξαναπροσπαθούμε
+        λίγες φορές με καθυστέρηση: μόλις ο χρήστης κλείσει την καρτέλα, η
+        διαγραφή περνά. Ποτέ δεν σκάει: αν μείνει κλειδωμένο ώς το τέλος, απλώς
+        το αφήνουμε — δεν είναι λόγος να χαλάσει η αρχειοθέτηση που πέτυχε.
         """
         try:
             source.unlink(missing_ok=True)
             log.info("Διαγράφηκε το διπλότυπο από τις Λήψεις: %s", source.name)
+            return
         except OSError as exc:
-            log.info("Δεν διαγράφηκε το %s από τις Λήψεις: %s", source.name, exc)
+            # Χρονοδιάγραμμα επαναλήψεων (δευτ.): αρκετά ώστε να προλάβει ο χρήστης
+            # να κλείσει την καρτέλα/προεπισκόπηση που κρατά το αρχείο.
+            delays = (2, 5, 10, 20)
+            if attempt < len(delays):
+                log.info(
+                    "Το %s κρατείται ακόμη· νέα προσπάθεια διαγραφής σε %ds",
+                    source.name, delays[attempt],
+                )
+                QTimer.singleShot(
+                    delays[attempt] * 1000,
+                    lambda: self._delete_download(source, attempt + 1),
+                )
+            else:
+                log.info("Δεν διαγράφηκε το %s από τις Λήψεις: %s", source.name, exc)
 
     # --------------------------------------------------------- σήμανση σφάλματος
     def _on_item_changed(self, item: QTableWidgetItem) -> None:

@@ -345,6 +345,89 @@ def test_download_viewer_only_saves_renderable_keeps_rest(conn, tmp_path, monkey
     assert rows["M_bad"]["local_path"] == ""
 
 
+def _pending_row(conn, tmp_path, url="https://prov/good"):
+    from timologio import repo
+    from timologio.crypto import Crypto
+    from timologio.models import Client, Direction, Document
+    from timologio.reports import documents_by_marks
+
+    crypto = Crypto(tmp_path / ".enckey")
+    cid = repo.upsert_client(
+        conn, Client(vat="123456783", label="ΔΕΙΓΜΑ ΑΕ",
+                     mydata_user="u", mydata_key="k" * 32), crypto,
+    )
+    repo.upsert_document(
+        conn, cid, Document(
+            mark="M1", invoice_type="1.1", issuer_vat="987654324",
+            issuer_name="ΠΡΟΜ ΟΕ", counter_vat="123456783", series="A", aa="1",
+            issue_date="2026-01-02", total_value=10.0, direction=Direction.INCOMING,
+            downloading_invoice_url=url, provider_host="prov"),
+    )
+    conn.commit()
+    return documents_by_marks(conn, "123456783", ["M1"])[0]
+
+
+def test_download_single_pdf_marks_downloaded(conn, tmp_path, monkeypatch):
+    """Διπλό-κλικ σε «σε αναμονή»: PDF παρόχου -> αρχειοθέτηση + downloaded."""
+    from timologio import sync
+    from timologio.config import Settings
+    from timologio.download.provider import PdfResult
+    from timologio.models import DocStatus
+
+    row = _pending_row(conn, tmp_path)
+    monkeypatch.setattr(
+        "timologio.download.provider.ProviderDownloader.fetch_pdf",
+        lambda self, url: PdfResult(payload=b"%PDF-1.4\nx\n%%EOF", url=url),
+    )
+    settings = Settings(data_dir=tmp_path / "data")
+    status, _msg = sync.download_single(conn, settings, row)
+    assert status == DocStatus.DOWNLOADED
+    saved = conn.execute(
+        "SELECT status, local_path, file_bytes FROM documents WHERE mark='M1'"
+    ).fetchone()
+    assert saved["status"] == "downloaded"
+    assert (settings.storage_root / saved["local_path"]).exists()
+
+
+def test_download_single_html_marks_viewer_only(conn, tmp_path, monkeypatch):
+    """Αν ο πάροχος γυρίζει HTML (NotAPdf), σημειώνεται «μόνο online»."""
+    from timologio import sync
+    from timologio.config import Settings
+    from timologio.download.provider import NotAPdf
+    from timologio.models import DocStatus
+
+    row = _pending_row(conn, tmp_path)
+
+    def _html(self, url):
+        raise NotAPdf("html")
+
+    monkeypatch.setattr(
+        "timologio.download.provider.ProviderDownloader.fetch_pdf", _html
+    )
+    settings = Settings(data_dir=tmp_path / "data")
+    status, _msg = sync.download_single(conn, settings, row)
+    assert status == DocStatus.VIEWER_ONLY
+    saved = conn.execute(
+        "SELECT status FROM documents WHERE mark='M1'"
+    ).fetchone()
+    assert saved["status"] == "viewer_only"
+
+
+def test_render_target_url_passthrough_and_eskap(monkeypatch):
+    """Ο στόχος του render είναι το ίδιο URL, εκτός από eskap που γυρίζει στην
+    καθαρή εκτυπώσιμη σελίδα."""
+    from timologio import sync
+
+    assert sync._render_target_url("https://prov/x") == "https://prov/x"
+    monkeypatch.setattr(
+        "timologio.download.provider.eskap_print_url",
+        lambda u: "https://www.eskap.gr/invoice_print.php?authentication_code=Z",
+    )
+    assert sync._render_target_url("https://www.eskap.gr/invoice/N") == (
+        "https://www.eskap.gr/invoice_print.php?authentication_code=Z"
+    )
+
+
 def test_viewer_browser_fallback_tries_next(conn, tmp_path, monkeypatch):
     """Αν ο πρώτος browser (Edge) δεν ανοίγει, δοκιμάζεται ο επόμενος (Chrome)."""
     from pathlib import Path as P

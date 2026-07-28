@@ -510,6 +510,13 @@ class MainWindow(QMainWindow):
 
         self.table = QTableWidget(0, len(_COLUMNS))
         self.table.setHorizontalHeaderLabels(_COLUMNS)
+        # Γρήγορα φίλτρα στην κεφαλίδα (ΑΦΜ, Επωνυμία, Κατάσταση), όπως στα
+        # παραστατικά. Πρέπει να μπει ΠΡΙΝ το setup_columns (που ρυθμίζει την
+        # κεφαλίδα), γι' αυτό κρατάμε αναφορά ώστε να μην τον μαζέψει ο GC.
+        from .table_filter import TableColumnFilter
+        self._client_col_filter = TableColumnFilter(
+            self.table, (_COL_VAT, _COL_LABEL, _COL_STATUS)
+        )
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)

@@ -13,6 +13,7 @@ from PySide6.QtCore import QSettings, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -38,6 +39,7 @@ from ..reports import (
     suppliers_of,
 )
 from .icons import icon
+from .table_filter import FilterHeader
 from .theme import CURRENT, money
 from .widgets import GrDateEdit, resort, setup_columns
 
@@ -85,8 +87,19 @@ _STATUS_SHORT = {
 _COL_CHECK = 0
 _COL_DATE = 1
 _COL_KIND = 2
+_COL_TYPE = 3
+_COL_PARTY = 4
+_COL_VATNO = 5
 _COL_NET, _COL_VAT, _COL_GROSS = 8, 9, 10
+_COL_CLS = 11
+_COL_STATUS = 12
 _COL_OPEN = len(_COLS) - 1
+
+#: Στήλες με γρήγορο φίλτρο (Excel-style) στην κεφαλίδα: κατηγορικές τιμές (και η
+#: ημερομηνία) που αξίζει να φιλτράρονται με λίστα — όχι ποσά/αύξοντες αριθμούς.
+_FILTERABLE_COLS = (
+    _COL_DATE, _COL_KIND, _COL_TYPE, _COL_PARTY, _COL_VATNO, _COL_CLS, _COL_STATUS
+)
 
 #: Τρεις ανεξάρτητοι άξονες αντί για έναν κατάλογο αμοιβαία αποκλειόμενων
 #: επιλογών: αλλιώς το «έξοδα ΚΑΙ ελήφθησαν PDF» ήταν αδύνατο να ζητηθεί.
@@ -177,6 +190,9 @@ class DocumentsView(QWidget):
         self._rows: list[sqlite3.Row] = []
         self._shown: list[sqlite3.Row] = []
         self._checked: set[str] = set()
+        # Φίλτρα ανά στήλη (Excel-style): {λογική στήλη -> επιτρεπτές τιμές}.
+        # Απουσία/κενό σύνολο = καμία επιλογή ακόμη σε αυτή τη στήλη.
+        self._col_filters: dict[int, set[str]] = {}
         self._build()
 
     # ------------------------------------------------------------------ UI
@@ -263,7 +279,11 @@ class DocumentsView(QWidget):
         first.addWidget(self.combo_cls)
         first.addStretch()
 
-        self.btn_clear = QPushButton("Καθαρισμός")
+        # Κόκκινο (danger) και ορατό μόνο όταν υπάρχει ενεργό φίλτρο: όταν η
+        # προβολή δείχνει τα πάντα, δεν υπάρχει τίποτα να «καθαριστεί».
+        self.btn_clear = QPushButton("  Καθαρισμός φίλτρων")
+        self.btn_clear.setObjectName("danger")
+        self.btn_clear.setIcon(icon("cancel", CURRENT.bad))
         self.btn_clear.setToolTip("Επαναφορά όλων των φίλτρων")
         self.btn_clear.clicked.connect(self._clear_filters)
         first.addWidget(self.btn_clear)
@@ -328,6 +348,9 @@ class DocumentsView(QWidget):
         root.addWidget(self.search)
 
         self.table = QTableWidget(0, len(_COLS))
+        header = FilterHeader(_FILTERABLE_COLS, self.table)
+        header.filterClicked.connect(self._open_col_filter)
+        self.table.setHorizontalHeader(header)
         self.table.setHorizontalHeaderLabels([c[0] for c in _COLS])
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
@@ -336,7 +359,7 @@ class DocumentsView(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setSortingEnabled(True)
         setup_columns(self.table, _COLS, self._prefs, "documents")
-        self.table.doubleClicked.connect(lambda _: self._toggle_current())
+        self.table.doubleClicked.connect(self._on_double_click)
         self.table.itemChanged.connect(self._on_item_changed)
         root.addWidget(self.table, 1)
 
@@ -456,6 +479,7 @@ class DocumentsView(QWidget):
         self.date_to.setEnabled(False)
         self.chk_dates.blockSignals(False)
         self.search.clear()
+        self._col_filters.clear()
         self.reload()
 
     def _active_keys(self) -> list[str]:
@@ -464,6 +488,24 @@ class DocumentsView(QWidget):
             for combo in self._axis_combos.values()
             if (combo.currentData() or "all") != "all"
         ]
+
+    def _any_filter_active(self) -> bool:
+        """Υπάρχει έστω ένα ενεργό φίλτρο (άξονας, προμηθευτής, τύπος, διάστημα,
+        αναζήτηση ή φίλτρο στήλης);"""
+        if self._active_keys():
+            return True
+        if (self.combo_supplier.currentData() or "") or (
+            self.combo_type.currentData() or ""
+        ):
+            return True
+        if self.chk_dates.isChecked():
+            return True
+        if self.search.text().strip():
+            return True
+        return any(self._col_filters.values())
+
+    def _update_clear_visibility(self) -> None:
+        self.btn_clear.setVisible(self._any_filter_active())
 
     def reload(self) -> None:
         if self._conn is None or not self._vat:
@@ -498,6 +540,52 @@ class DocumentsView(QWidget):
         )
         self.banner.setVisible(True)
 
+    def _col_value(self, r: sqlite3.Row, col: int) -> str:
+        """Η εμφανιζόμενη τιμή μιας γραμμής σε μια φιλτραρίσιμη στήλη — ίδια με
+        αυτήν που δείχνει ο πίνακας, ώστε τα φίλτρα στήλης να ταιριάζουν οπτικά."""
+        is_income = r["issuer_vat"] == self._vat
+        if col == _COL_DATE:
+            return _gr_date(r["issue_date"])
+        if col == _COL_KIND:
+            return "Έσοδο" if is_income else "Έξοδο"
+        if col == _COL_TYPE:
+            return r["invoice_type"] or "—"
+        if col == _COL_PARTY:
+            return (r["counter_name"] if is_income else r["issuer_name"]) or "—"
+        if col == _COL_VATNO:
+            return (r["counter_vat"] if is_income else r["issuer_vat"]) or "—"
+        if col == _COL_CLS:
+            return CLASSIFICATION_LABELS_EL[
+                Classification(r["classification"] or "unknown")
+            ]
+        if col == _COL_STATUS:
+            return _STATUS_SHORT[DocStatus(r["status"])]
+        return ""
+
+    def _distinct_col_values(self, col: int) -> list[str]:
+        """Οι μοναδικές τιμές μιας στήλης στο τρέχον σύνολο (πριν τα φίλτρα
+        στήλης), ταξινομημένες — για τη λίστα του γρήγορου φίλτρου."""
+        return sorted({self._col_value(r, col) for r in self._rows})
+
+    def _open_col_filter(self, col: int) -> None:
+        """Ανοίγει το ενσωματωμένο γρήγορο φίλτρο κάτω από την κεφαλίδα."""
+        from .table_filter import open_filter_popup
+
+        values = self._distinct_col_values(col)
+        selected = self._col_filters.get(col) or set(values)
+
+        def apply(chosen: set[str]) -> None:
+            if not chosen or chosen == set(values):
+                self._col_filters.pop(col, None)  # όλα επιλεγμένα = χωρίς φίλτρο
+            else:
+                self._col_filters[col] = chosen
+            self._fill()
+
+        open_filter_popup(
+            self.table.horizontalHeader(), col, _COLS[col][0] or "Στήλη",
+            values, selected, apply,
+        )
+
     def _fill(self) -> None:
         needle = self.search.text().strip().lower()
         rows = self._rows
@@ -511,6 +599,12 @@ class DocumentsView(QWidget):
                 or needle in r["mark"]
                 or needle in (r["series"] or "").lower()
             ]
+
+        # Φίλτρα στήλης (Excel-style): κρατάμε μόνο τις γραμμές που η τιμή τους σε
+        # κάθε φιλτραρισμένη στήλη ανήκει στις επιλεγμένες.
+        for col, allowed in self._col_filters.items():
+            if allowed:
+                rows = [r for r in rows if self._col_value(r, col) in allowed]
 
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False)
@@ -583,6 +677,10 @@ class DocumentsView(QWidget):
         self._total_labels["vat"].setText(f"{money(vat_sum)} €")
         self._total_labels["gross"].setText(f"{money(gross)} €")
         self._update_totals_caption()
+        self._update_clear_visibility()
+        header = self.table.horizontalHeader()
+        if isinstance(header, FilterHeader):
+            header.set_active({c for c, v in self._col_filters.items() if v})
 
     def _update_totals_caption(self) -> None:
         picked = len(self._checked)
@@ -601,6 +699,50 @@ class DocumentsView(QWidget):
         else:
             self._checked.discard(mark)
         self._update_totals_caption()
+
+    def _mark_at_row(self, table_row: int) -> str | None:
+        item = self.table.item(table_row, _COL_CHECK)
+        return item.data(_MARK_ROLE) if item is not None else None
+
+    def _row_by_mark(self, mark: str) -> sqlite3.Row | None:
+        for r in self._rows:
+            if r["mark"] == mark:
+                return r
+        return None
+
+    def _on_double_click(self, index) -> None:
+        """Διπλό κλικ: αν η γραμμή είναι «σε αναμονή», κατεβάζει το παραστατικό
+        επιτόπου· αλλιώς αλλάζει την επιλογή (checkbox), όπως πάντα."""
+        mark = self._mark_at_row(index.row())
+        row = self._row_by_mark(mark) if mark else None
+        if row is not None and DocStatus(row["status"]) == DocStatus.PENDING:
+            self._download_pending_row(row)
+            return
+        self._toggle_current()
+
+    def _download_pending_row(self, row: sqlite3.Row) -> None:
+        """Άμεση λήψη μιας γραμμής «σε αναμονή» από τον πάροχο.
+
+        Αν ο πάροχος δίνει PDF, αρχειοθετείται επιτόπου· αν το δείχνει μόνο
+        online, ανοίγει η καθοδηγούμενη λήψη μέσω browser για τη γραμμή.
+        """
+        if self._conn is None:
+            return
+        from ..sync import download_single
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            status, message = download_single(self._conn, self._settings, row)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if status == DocStatus.VIEWER_ONLY:
+            # Δεν υπάρχει PDF παρόχου — συνέχισε τη λήψη μέσω του browser.
+            self._download_online_row(row)
+            return
+        self.reload()
+        if status not in (DocStatus.DOWNLOADED,):
+            QMessageBox.warning(self, "Λήψη παραστατικού", message)
 
     def _toggle_current(self) -> None:
         """Διπλό κλικ οπουδήποτε στη γραμμή αλλάζει το checkbox."""
@@ -831,6 +973,7 @@ class DocumentsView(QWidget):
         self.btn_refresh.setIcon(icon("refresh", CURRENT.muted))
         self.btn_zip.setIcon(icon("backup", CURRENT.muted))
         self.btn_print.setIcon(icon("pdf", CURRENT.muted))
+        self.btn_clear.setIcon(icon("cancel", CURRENT.bad))
         self.title_icon.setPixmap(icon("pdf", CURRENT.accent, 22).pixmap(QSize(22, 22)))
         self.banner_icon.setPixmap(
             icon("info", CURRENT.accent, 16).pixmap(QSize(16, 16))

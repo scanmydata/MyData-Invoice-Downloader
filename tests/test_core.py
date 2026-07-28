@@ -10,12 +10,15 @@ from timologio.config import load_settings
 from timologio.crypto import Crypto, SecretRedactingFilter
 from timologio.download import (
     epsilon_pdf_url,
+    eskap_print_url,
     is_complete_pdf,
+    is_eskap,
     pdf_url,
     sanitize,
     target_path,
     write_atomic,
 )
+from timologio.download import provider as _provider
 from timologio.models import Direction, Document
 from timologio.mydata.parse import extract_cursors, iso_date, parse_documents
 from timologio.normalize import mask, norm_afm, valid_afm, valid_subscription_key
@@ -81,6 +84,44 @@ def test_epsilon_pdf_url_ignores_non_epsilon() -> None:
     assert epsilon_pdf_url("https://einvoice.impact.gr/foo/bar") is None
     # Epsilon host αλλά χωρίς αναγνωρίσιμο documentId -> None (πέφτει στο /pdf).
     assert epsilon_pdf_url("https://epsilondigital.epsilonnet.gr/login") is None
+
+
+# --------------------------------------------------------------------------
+# eskap.gr — καθαρή εκτυπώσιμη σελίδα πίσω από το κουμπί «Εκτύπωση»
+# --------------------------------------------------------------------------
+
+def test_is_eskap_matches_host() -> None:
+    assert is_eskap("https://www.eskap.gr/invoice/N6SAB")
+    assert is_eskap("https://eskap.gr/invoice/x")
+    assert not is_eskap("https://einvoice.impact.gr/foo")
+
+
+def test_eskap_print_url_extracts_authentication_code(monkeypatch) -> None:
+    """Από τη σελίδα του παραστατικού βγάζουμε το URL του κουμπιού «Εκτύπωση»
+    (``/invoice_print.php?authentication_code=…``) — η καθαρή εκτυπώσιμη μορφή."""
+    html = (
+        '<html><body><button class="btn" '
+        "onclick=\"printPage('/invoice_print.php?authentication_code=ABC123DEF')\">"
+        "Εκτύπωση</button></body></html>"
+    )
+
+    class _Resp:
+        status_code = 200
+        text = html
+        url = "https://www.eskap.gr/invoice/N6SAB"
+
+    class _Sess:
+        def get(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(_provider.requests, "Session", lambda: _Sess())
+    assert eskap_print_url("https://www.eskap.gr/invoice/N6SAB") == (
+        "https://www.eskap.gr/invoice_print.php?authentication_code=ABC123DEF"
+    )
+
+
+def test_eskap_print_url_none_for_other_hosts() -> None:
+    assert eskap_print_url("https://epsilondigital.epsilonnet.gr/fd/abc:1") is None
 
 
 # --------------------------------------------------------------------------

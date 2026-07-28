@@ -252,6 +252,23 @@ class HeadlessRenderer:
             "--disable-background-networking",
             "--mute-audio",
             "--hide-scrollbars",
+            # Επιτάχυνση «κρύας» εκκίνησης: σε φρέσκο προφίλ, ο Edge/Chrome αλλιώς
+            # μπλοκάρει την αρχικοποίηση σε ενημερώσεις components, sync, telemetry
+            # και δικτυακές κλήσεις — γι' αυτό «αργούσε πολύ να ξεκινήσει» ενίοτε,
+            # ακόμη κι όταν η δοκιμή browser περνούσε. Κανένα από αυτά δεν αλλάζει
+            # την απόδοση της σελίδας σε PDF.
+            "--disable-sync",
+            "--disable-component-update",
+            "--disable-domain-reliability",
+            "--disable-client-side-phishing-detection",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--no-service-autorun",
+            "--metrics-recording-only",
+            "--disable-features=Translate,MediaRouter,OptimizationHints,"
+            "OptimizationGuideModelDownloading,CalculateNativeWinOcclusion,"
+            "InterestFeedContentSuggestions,DialMediaRouteProvider",
             f"--user-data-dir={self._profile}",
             "--remote-debugging-port=0",
             # Απαραίτητο από Chrome/Edge 111+: αλλιώς το DevTools websocket

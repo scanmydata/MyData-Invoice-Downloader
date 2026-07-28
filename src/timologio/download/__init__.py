@@ -9,6 +9,8 @@ from .provider import (
     ProviderRateLimited,
     ProviderUnavailable,
     epsilon_pdf_url,
+    eskap_print_url,
+    is_eskap,
     pdf_url,
 )
 from .storage import (
@@ -33,6 +35,8 @@ __all__ = [
     "IncompleteDownload",
     "pdf_url",
     "epsilon_pdf_url",
+    "eskap_print_url",
+    "is_eskap",
     "target_path",
     "resolve_path",
     "write_atomic",

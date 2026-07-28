@@ -31,7 +31,14 @@ from .download import (
     write_atomic,
 )
 from .download.storage import long_path
-from .models import Client, Direction, Document, OperationCancelled, RunStats
+from .models import (
+    Client,
+    Direction,
+    DocStatus,
+    Document,
+    OperationCancelled,
+    RunStats,
+)
 from .mydata import AuthError, MissingKeyError, MydataClient, MydataError
 from .vies import ViesClient
 
@@ -339,6 +346,61 @@ def _persist_outcome(
     progress(f"  ✓ {mark} ({size:,} B)")
 
 
+def download_single(
+    conn: sqlite3.Connection,
+    settings: Settings,
+    row: sqlite3.Row,
+) -> tuple[DocStatus, str]:
+    """Κατεβάζει **ένα** παραστατικό άμεσα από τον πάροχο (on-demand).
+
+    Για διπλό-κλικ σε γραμμή «σε αναμονή»: δοκιμάζει το PDF endpoint του παρόχου
+    και αρχειοθετεί, ή σημειώνει «μόνο online»/σφάλμα — ίδια λογική με το
+    ``download_pending`` αλλά για μία γραμμή, χωρίς thread pool (σύγχρονο).
+
+    Το ``row`` προέρχεται από ``documents_for`` (έχει client_id/client_vat/
+    client_label). Επιστρέφει (νέα κατάσταση, μήνυμα για τον χρήστη).
+    """
+    url = row["downloading_invoice_url"]
+    if not url:
+        return DocStatus.NO_PROVIDER_URL, "Το παραστατικό δεν έχει σύνδεσμο παρόχου."
+
+    downloader = ProviderDownloader(settings)
+    try:
+        result = downloader.fetch_pdf(url)
+    except NotAPdf:
+        repo.mark_viewer_only(conn, row["client_id"], row["mark"])
+        conn.commit()
+        return DocStatus.VIEWER_ONLY, "Ο πάροχος το δείχνει μόνο online."
+    except ProviderError as exc:
+        repo.mark_failed(
+            conn, row["client_id"], row["mark"],
+            f"{exc.message_el}: {exc}", retryable=exc.retryable,
+        )
+        conn.commit()
+        status = (
+            DocStatus.FAILED_RETRYABLE if exc.retryable
+            else DocStatus.FAILED_PERMANENT
+        )
+        return status, exc.message_el
+    except Exception as exc:  # noqa: BLE001
+        repo.mark_failed(conn, row["client_id"], row["mark"], str(exc), retryable=True)
+        conn.commit()
+        return DocStatus.FAILED_RETRYABLE, str(exc)
+    finally:
+        downloader.close()
+
+    doc = _doc_from_row(row)
+    path = resolve_path(settings.storage_root, row["client_vat"], doc,
+                        client_label=row["client_label"])
+    size, sha = write_atomic(path, result.payload)
+    repo.mark_downloaded(
+        conn, row["client_id"], row["mark"],
+        str(path.relative_to(settings.storage_root)), size, sha,
+    )
+    conn.commit()
+    return DocStatus.DOWNLOADED, f"Ελήφθη το PDF ({size:,} B)."
+
+
 def rename_existing(
     conn: sqlite3.Connection,
     settings: Settings,
@@ -558,6 +620,23 @@ def _open_renderer_with_fallback(
     raise AllBrowsersFailed()
 
 
+def _render_target_url(url: str) -> str:
+    """Ποιο URL να τυπώσει ο browser σε PDF για ένα «μόνο online» παραστατικό.
+
+    Συνήθως το ίδιο το ``downloading_invoice_url``. Εξαίρεση η **eskap.gr**: η
+    σελίδα του παραστατικού έχει μενού/κουμπιά και θα τυπωνόταν ολόκληρη· εκεί
+    γυρίζουμε στην «καθαρή» εκτυπώσιμη σελίδα (``/invoice_print.php?…``) ώστε το
+    PDF να είναι μόνο το τιμολόγιο. Αν κάτι αποτύχει, μένουμε στο αρχικό URL.
+    """
+    try:
+        from .download.provider import eskap_print_url
+
+        printable = eskap_print_url(url)
+    except Exception:  # noqa: BLE001 — ποτέ δεν μπλοκάρει το render
+        printable = None
+    return printable or url
+
+
 def _render_viewer_batch(
     conn: sqlite3.Connection,
     settings: Settings,
@@ -610,14 +689,19 @@ def _render_viewer_batch(
             # ξεκινήσουμε, δεν ανοίγει καθόλου. Η ίδια η εκκίνηση είναι ακυρώσιμη.
             try:
                 if renderer is None:
+                    progress(
+                        "  … άνοιγμα browser"
+                        + (" (ορατός)" if headed else " (αόρατος)")
+                        + " — η πρώτη εκκίνηση μπορεί να αργήσει λίγο…"
+                    )
                     renderer, browser_idx = _open_renderer_with_fallback(
                         browsers, browser_idx, headed=headed,
                         should_cancel=should_cancel, progress=progress,
                         profile_dir=profile_dir,
                     )
                 pdf = renderer.render_pdf(
-                    row["downloading_invoice_url"], patient=patient,
-                    timeout=timeout, should_cancel=should_cancel,
+                    _render_target_url(row["downloading_invoice_url"]),
+                    patient=patient, timeout=timeout, should_cancel=should_cancel,
                 )
             except HeadlessCancelled:
                 cancelled = True

@@ -22,9 +22,56 @@ from PySide6.QtCore import QRect, QSize, Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QToolBar, QWidget
+
+from .icons import icon
+from .theme import CURRENT
 
 log = logging.getLogger(__name__)
+
+#: Ελληνικά tooltips για ΟΛΑ τα εργαλεία της native γραμμής (ταιριασμένα με το
+#: σταθερό αγγλικό ``text()`` της ενέργειας). Έτσι το hover δείχνει πάντα ελληνική
+#: εξήγηση αντί για κενό/αγγλικό.
+_TOOLBAR_TIPS = {
+    "Fit width": "Προσαρμογή στο πλάτος",
+    "Fit page": "Προσαρμογή σελίδας",
+    "Zoom out": "Σμίκρυνση",
+    "Zoom in": "Μεγέθυνση",
+    "Portrait": "Κατακόρυφος προσανατολισμός",
+    "Landscape": "Οριζόντιος προσανατολισμός",
+    "First page": "Πρώτη σελίδα",
+    "Previous page": "Προηγούμενη σελίδα",
+    "Next page": "Επόμενη σελίδα",
+    "Last page": "Τελευταία σελίδα",
+    "Show single page": "Μία σελίδα",
+    "Show facing pages": "Αντικριστές σελίδες",
+    "Show overview of all pages": "Επισκόπηση όλων των σελίδων",
+    "Page setup": "Διαμόρφωση σελίδας",
+    "Print": "Εκτύπωση",
+}
+
+#: Κουμπιά που εμφανίζονταν **κενά** (τα εικονίδιά τους έρχονται από πόρους που το
+#: PyInstaller δεν πάντα πακετάρει): τους δίνουμε δικά μας SVG εικονίδια (που
+#: ζωγραφίζονται μόνα τους). Το ίδιο το preview μένει native.
+_TOOLBAR_ICONS = {
+    "Print": "printer",
+    "Zoom in": "zoom_in",
+    "Zoom out": "zoom_out",
+}
+
+
+def _fix_toolbar_icons(dialog: QPrintPreviewDialog) -> None:
+    for toolbar in dialog.findChildren(QToolBar):
+        for action in toolbar.actions():
+            tip = _TOOLBAR_TIPS.get(action.text())
+            if tip:
+                # Και τα δύο: το QToolButton δείχνει το toolTip στο hover, αλλά
+                # κάποια στυλ διαβάζουν το statusTip — τα ορίζουμε μαζί.
+                action.setToolTip(tip)
+                action.setStatusTip(tip)
+            name = _TOOLBAR_ICONS.get(action.text())
+            if name:
+                action.setIcon(icon(name, CURRENT.txt))
 
 #: Ανάλυση απόδοσης της σελίδας σε εικόνα. 200 DPI διαβάζεται άνετα και κρατά
 #: μια σελίδα A4 γύρω στα ~15MP αντί για ~35MP στα 300 DPI.
@@ -103,6 +150,9 @@ def print_pdfs(paths: list[Path], parent: QWidget | None = None) -> tuple[int, i
     dialog = QPrintPreviewDialog(printer, parent)
     dialog.setWindowTitle("Προεπισκόπηση εκτύπωσης")
     dialog.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+    # Τα κουμπιά «Εκτύπωση / Ζουμ +/−» έδειχναν κενά περιγράμματα: τους δίνουμε
+    # δικά μας εικονίδια. Το υπόλοιπο preview μένει αυτούσιο (native).
+    _fix_toolbar_icons(dialog)
     dialog.paintRequested.connect(render)
     if parent is not None:
         dialog.resize(parent.size())

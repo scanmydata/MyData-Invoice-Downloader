@@ -39,6 +39,45 @@ def test_uses_native_qt_preview():
     assert "QPrintPreviewDialog" in source
 
 
+def test_toolbar_icons_and_greek_tooltips(app):
+    """Τα κενά κουμπιά (Εκτύπωση/Ζουμ) παίρνουν δικά μας εικονίδια και ελληνικά
+    tooltips, χωρίς να αλλάξει το native preview."""
+    from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog
+    from PySide6.QtWidgets import QToolBar
+
+    dialog = QPrintPreviewDialog(QPrinter())
+    printing._fix_toolbar_icons(dialog)
+    found: dict[str, tuple[bool, str]] = {}
+    for toolbar in dialog.findChildren(QToolBar):
+        for action in toolbar.actions():
+            if action.text() in ("Print", "Zoom in", "Zoom out"):
+                found[action.text()] = (not action.icon().isNull(), action.toolTip())
+    assert all(icon_set for icon_set, _ in found.values())
+    assert found["Print"][1] == "Εκτύπωση"
+    assert found["Zoom in"][1] == "Μεγέθυνση"
+    assert found["Zoom out"][1] == "Σμίκρυνση"
+
+
+def test_manual_rebuilds_stale_empty_pdf(app, tmp_path: Path):
+    """Ένα παλιό «άδειο» εγχειρίδιο με σωστή σφραγίδα ΔΕΝ μένει για πάντα:
+    ξαναχτίζεται σε έγκυρο PDF."""
+    import hashlib
+
+    from timologio.gui import manual
+    from timologio.gui.theme import apply_theme
+
+    apply_theme(app, "light")
+    target = tmp_path / manual.FILENAME
+    target.write_bytes(b"%PDF-1.4 tiny")  # άδειο/χαλασμένο
+    (tmp_path / ".manual.hash").write_text(
+        hashlib.sha256(manual._html().encode("utf-8")).hexdigest(), encoding="utf-8"
+    )
+    assert not manual._looks_built(target)
+    path = manual.ensure_manual(tmp_path)
+    assert manual._looks_built(path)
+    assert path.stat().st_size > 20_000
+
+
 def test_wait_cursor_is_balanced_inside_render():
     """Ο δείκτης αναμονής μπαίνει/βγαίνει ΜΕΣΑ στο render, όχι γύρω από το
     exec(): αλλιώς έμενε κολλημένος «loading» σε όλη την προεπισκόπηση."""

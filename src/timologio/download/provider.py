@@ -25,6 +25,25 @@ _FORMAT_SUFFIXES = ("/pdf", "/myDATA", "/EN16931")
 #: Host κατάληξη όλων των υποτομέων της Epsilon (epsilondigital*.epsilonnet.gr).
 _EPSILON_HOST = "epsilonnet.gr"
 
+#: eskap.gr (ΕΣΚΑΠ): η σελίδα του παραστατικού είναι HTML με «χρώμιο» (μενού,
+#: κουμπιά)· η καθαρή εκτυπώσιμη μορφή είναι πίσω από το κουμπί «Εκτύπωση» που
+#: καλεί ``printPage('/invoice_print.php?authentication_code=…')``.
+_ESKAP_HOST = "eskap.gr"
+_ESKAP_PRINT_RE = re.compile(
+    r"invoice_print\.php\?authentication_code=([A-Za-z0-9]+)", re.I
+)
+
+#: UA σαν browser: κάποιοι πάροχοι (eskap) γυρίζουν 403/άδειο χωρίς αυτό.
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+
+
+def _host_matches(netloc: str, host: str) -> bool:
+    netloc = (netloc or "").lower()
+    return netloc == host or netloc.endswith("." + host)
+
 
 class ProviderError(Exception):
     message_el = "Σφάλμα παρόχου"
@@ -115,7 +134,7 @@ def epsilon_pdf_url(url: str) -> str | None:
     browser πέρασμα ως «μόνο online».
     """
     p = urlparse(url)
-    if not (p.netloc or "").lower().endswith(_EPSILON_HOST):
+    if not _host_matches(p.netloc, _EPSILON_HOST):
         return None
     docid: str | None = None
     if "/DocViewer/" in p.path:
@@ -132,6 +151,51 @@ def epsilon_pdf_url(url: str) -> str | None:
     if not docid:
         return None
     return f"{p.scheme}://{p.netloc}/filedocument/getfile?fileType=2&documentId={docid}"
+
+
+def is_eskap(url: str) -> bool:
+    """Αν το URL ανήκει στην eskap.gr (ΕΣΚΑΠ)."""
+    return _host_matches(urlparse(url).netloc, _ESKAP_HOST)
+
+
+def eskap_print_url(
+    url: str,
+    *,
+    session: requests.Session | None = None,
+    timeout: float = 20.0,
+) -> str | None:
+    """Το URL της **καθαρής εκτυπώσιμης** σελίδας της eskap.gr, ή ``None``.
+
+    Η σελίδα ``/invoice/<token>`` είναι πλήρες HTML με μενού/κουμπιά — αν την
+    τυπώσουμε σε PDF, παίρνουμε τη σελίδα, όχι το τιμολόγιο. Το ίδιο το site
+    δίνει «καθαρή» εκτυπώσιμη μορφή στο ``/invoice_print.php?authentication_code=…``
+    (το URL του κουμπιού «Εκτύπωση»). Την εντοπίζουμε διαβάζοντας τη σελίδα και
+    την επιστρέφουμε, ώστε ο headless browser να τυπώσει **αυτήν**.
+
+    Δεν είναι PDF endpoint (γυρίζει HTML): γι' αυτό δεν μπαίνει στο ``fetch_pdf``
+    — χρησιμοποιείται μόνο ως στόχος για το print-to-PDF του browser. Καμία
+    παράκαμψη ελέγχου: η eskap δεν έχει έλεγχο «είστε άνθρωπος».
+    """
+    if not is_eskap(url):
+        return None
+    sess = session or requests.Session()
+    try:
+        resp = sess.get(
+            url, timeout=timeout, allow_redirects=True,
+            headers={"User-Agent": _BROWSER_UA},
+        )
+    except requests.RequestException:
+        return None
+    if resp.status_code != 200:
+        return None
+    match = _ESKAP_PRINT_RE.search(resp.text)
+    if not match:
+        return None
+    p = urlparse(str(resp.url) or url)
+    return (
+        f"{p.scheme}://{p.netloc}"
+        f"/invoice_print.php?authentication_code={match.group(1)}"
+    )
 
 
 class ProviderDownloader:

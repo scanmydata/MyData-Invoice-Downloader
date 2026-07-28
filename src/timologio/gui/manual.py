@@ -464,6 +464,22 @@ def build_manual(target: Path) -> Path:
     return target
 
 
+#: Ένα πραγματικό εγχειρίδιο είναι ~190KB· ένα κενό/χαλασμένο PDF είναι λίγα KB.
+#: Κάτω από αυτό το κατώφλι θεωρούμε ότι το αρχείο δεν στοιχειοθετήθηκε σωστά.
+_MIN_PDF_BYTES = 20_000
+
+
+def _looks_built(path: Path) -> bool:
+    """Αληθές αν το αρχείο μοιάζει με πραγματικό (μη κενό) PDF εγχειρίδιο."""
+    try:
+        if path.stat().st_size < _MIN_PDF_BYTES:
+            return False
+        with open(path, "rb") as handle:
+            return handle.read(5) == b"%PDF-"
+    except OSError:
+        return False
+
+
 def ensure_manual(data_dir: Path) -> Path:
     """Η διαδρομή του εγχειριδίου, φτιάχνοντάς το αν λείπει ή αν άλλαξε.
 
@@ -480,7 +496,10 @@ def ensure_manual(data_dir: Path) -> Path:
     stamp = data_dir / ".manual.hash"
     signature = hashlib.sha256(_html().encode("utf-8")).hexdigest()
 
-    if target.exists() and stamp.exists():
+    # Εμπιστευόμαστε το cache ΜΟΝΟ αν το αρχείο υπάρχει, είναι έγκυρο μη-κενό PDF
+    # και η υπογραφή ταιριάζει. Αλλιώς ξαναχτίζεται — έτσι ένα παλιό «άδειο» PDF
+    # (π.χ. από προηγούμενη έκδοση που το έγραψε κενό) δεν μένει για πάντα.
+    if _looks_built(target) and stamp.exists():
         try:
             if stamp.read_text(encoding="utf-8").strip() == signature:
                 return target
@@ -488,6 +507,13 @@ def ensure_manual(data_dir: Path) -> Path:
             pass
 
     build_manual(target)
+    if not _looks_built(target):
+        # Το PDF βγήκε κενό: μη γράφεις τη σφραγίδα (ώστε να ξαναδοκιμαστεί) και
+        # πες το καθαρά αντί να ανοίξει ένα άδειο αρχείο.
+        raise RuntimeError(
+            "Το εγχειρίδιο δημιουργήθηκε κενό. Δοκιμάστε ξανά· αν επιμένει, "
+            "στείλτε το αρχείο καταγραφής."
+        )
     try:
         stamp.write_text(signature, encoding="utf-8")
     except OSError:
