@@ -144,6 +144,10 @@ def test_download_viewer_only_headed_fallback(
             self._headed = headed
         def render_pdf(self, url, **k):
             return (b"%PDF-1.4 " + b"z" * 300) if self._headed else None
+        def save_via_button(self, url, download_dir, **k):
+            # Epsilon στο ορατό πέρασμα: πατά το κουμπί «Αποθήκευση ως PDF» και
+            # πιάνει το αρχείο — εδώ το προσομοιώνουμε.
+            return (b"%PDF-1.4 " + b"z" * 300) if self._headed else None
         def close(self):
             pass
 
@@ -163,6 +167,54 @@ def test_download_viewer_only_headed_fallback(
         conn, settings, headed_fallback=False
     )
     assert (saved2, skipped2, failed2) == (0, 1, 0)
+
+
+def test_is_epsilon_docviewer_detection() -> None:
+    from timologio.sync import _is_epsilon_docviewer
+
+    assert _is_epsilon_docviewer("epsilondigital-3rdpartd.epsilonnet.gr", "")
+    assert _is_epsilon_docviewer("", "https://x.epsilonnet.gr/fd/abc:1")
+    assert not _is_epsilon_docviewer("prov", "https://timologiera.gr/x")
+
+
+def test_headed_epsilon_uses_save_button_not_printtopdf(
+    conn: sqlite3.Connection, tmp_path: Path, monkeypatch
+) -> None:
+    """Στο ορατό πέρασμα, τα Epsilon περνούν από save_via_button (κουμπί παρόχου),
+    ΟΧΙ από print-to-PDF."""
+    from pathlib import Path as _P
+
+    import timologio.download.headless as headless
+    from timologio import sync
+
+    used: list[str] = []
+
+    class FakeRenderer:
+        def __init__(self, *a, headed=False, **k):
+            self._headed = headed
+        def render_pdf(self, url, **k):
+            used.append("render_pdf")
+            return None
+        def save_via_button(self, url, download_dir, **k):
+            used.append("save_via_button")
+            return b"%PDF-1.4 " + b"z" * 300
+        def close(self):
+            pass
+
+    monkeypatch.setattr(headless, "find_browser", lambda: _P("edge.exe"))
+    monkeypatch.setattr(headless, "find_browsers", lambda: [_P("edge.exe")])
+    monkeypatch.setattr(headless, "HeadlessRenderer", FakeRenderer)
+    # Το πέρασμα 0 (άμεσο) να μη χτυπά δίκτυο: όλα «μόνο online».
+    from timologio.download.provider import NotAPdf
+    monkeypatch.setattr(
+        "timologio.download.provider.ProviderDownloader.fetch_pdf",
+        lambda self, url: (_ for _ in ()).throw(NotAPdf("html")),
+    )
+
+    settings = Settings(data_dir=tmp_path / "data")
+    saved, skipped, failed = sync.download_viewer_only(conn, settings)
+    assert saved == 1
+    assert "save_via_button" in used
 
 
 def test_guided_flow_deletes_downloads_duplicate(

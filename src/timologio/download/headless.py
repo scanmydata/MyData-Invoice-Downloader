@@ -38,6 +38,24 @@ log = logging.getLogger(__name__)
 #: στοιχειοθετήθηκε (κενή προβολή) — δεν αποθηκεύουμε λευκό PDF.
 MIN_TEXT = 300
 
+#: JS που πατά το κουμπί «Αποθήκευση ως PDF» του παρόχου (Epsilon DocViewer).
+#: Ψάχνει τον σύνδεσμο/κουμπί με title «Save as PDF»/«Αποθήκευση ως PDF» ή με
+#: κείμενο ακριβώς «PDF» (η επιλογή στο μενού «Αποθήκευση»). Δεν παρακάμπτουμε
+#: τίποτα — πατάμε το ΙΔΙΟ κουμπί που θα πατούσε ο χρήστης.
+_SAVE_PDF_CLICK_JS = """
+(function () {
+  var els = Array.prototype.slice.call(
+    document.querySelectorAll('a, button, [role="button"]'));
+  var t = els.find(function (e) {
+    var tx = (e.textContent || '').trim();
+    var ti = (e.getAttribute && e.getAttribute('title')) || '';
+    return /save as pdf|αποθήκευση ως pdf/i.test(ti) || tx === 'PDF';
+  });
+  if (t) { t.click(); return true; }
+  return false;
+})()
+"""
+
 
 class HeadlessError(Exception):
     """Γενικό σφάλμα του headless renderer."""
@@ -236,6 +254,16 @@ class HeadlessRenderer:
         if self._fixed_profile is not None:
             os.makedirs(self._fixed_profile, exist_ok=True)
             self._profile = self._fixed_profile
+            # Μόνιμο προφίλ: αν ο προηγούμενος browser δεν καθάρισε (kill/crash),
+            # μένουν «Singleton*» αρχεία που κάνουν τον νέο browser να νομίζει ότι
+            # τρέχει ήδη άλλη instance — τη προωθεί εκεί και βγαίνει, χωρίς
+            # DevTools («connection refused»). Τα σβήνουμε: δεν τρέχει δική μας
+            # instance σε αυτό το προφίλ αυτή τη στιγμή.
+            for lock in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+                try:
+                    os.remove(os.path.join(self._fixed_profile, lock))
+                except OSError:
+                    pass
         else:
             self._profile = tempfile.mkdtemp(prefix="tl_headless_")
         # Το headed διαφέρει από το headless ΜΟΝΟ στο ότι είναι ορατό: ίδια
@@ -286,12 +314,22 @@ class HeadlessRenderer:
             args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=creationflags,
         )
-        self._port = self._read_port(timeout)
-        page = self._first_page_target(self._port, timeout)
-        self._ws = websocket.create_connection(
-            page["webSocketDebuggerUrl"], max_size=None, timeout=60
-        )
-        self._call("Page.enable")
+        # ΚΡΙΣΙΜΟ: αν αποτύχει οτιδήποτε ΜΕΤΑ το spawn (π.χ. δεν απαντά το
+        # DevTools), η εξαίρεση βγαίνει από τον constructor πριν υπάρξει
+        # αντικείμενο — οπότε κανείς δεν καλεί close() και ο browser μένει
+        # ορφανός (και κρατά κλειδωμένο το μόνιμο προφίλ). Τον σκοτώνουμε εδώ.
+        try:
+            self._port = self._read_port(timeout)
+            page = self._first_page_target(self._port, timeout)
+            self._ws = websocket.create_connection(
+                page["webSocketDebuggerUrl"], max_size=None, timeout=60
+            )
+            self._call("Page.enable")
+        except BaseException:
+            if self._proc is not None:
+                self._kill_tree(self._proc)
+                self._proc = None
+            raise
 
     def _read_port(self, timeout: float) -> int:
         assert self._profile is not None
@@ -419,6 +457,74 @@ class HeadlessRenderer:
         )
         pdf = base64.b64decode(result.get("data", ""))
         return pdf if pdf.startswith(b"%PDF") else None
+
+    def save_via_button(
+        self,
+        url: str,
+        download_dir: str | Path,
+        *,
+        min_text: int = MIN_TEXT,
+        render_timeout: float = 40.0,
+        download_timeout: float = 45.0,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> bytes | None:
+        """Ανοίγει τη σελίδα του παρόχου και πατά το ΔΙΚΟ ΤΟΥ κουμπί «Αποθήκευση
+        ως PDF», όπως θα έκανε ο χρήστης, και πιάνει το αρχείο που κατεβαίνει.
+
+        Για παρόχους (π.χ. Epsilon DocViewer) που φτιάχνουν το επίσημο PDF μέσα
+        στον browser (client-side) — δεν υπάρχει endpoint να ζητήσουμε και τίποτα
+        να παρακάμψουμε. Χρησιμοποιείται σε **ορατό** παράθυρο ώστε, αν εμφανιστεί
+        έλεγχος «είστε άνθρωπος», να τον περνά ο ίδιος ο χρήστης.
+
+        Επιστρέφει τα bytes του PDF, ή ``None`` αν δεν στοιχειοθετήθηκε η σελίδα ή
+        δεν βρέθηκε/δεν κατέβασε το κουμπί.
+        """
+        download_dir = Path(download_dir)
+        download_dir.mkdir(parents=True, exist_ok=True)
+        # Κατεύθυνε τις λήψεις στον δικό μας φάκελο, ώστε να πιάσουμε το αρχείο.
+        for method in ("Browser.setDownloadBehavior", "Page.setDownloadBehavior"):
+            try:
+                self._call(method, behavior="allow",
+                           downloadPath=str(download_dir), eventsEnabled=True)
+                break
+            except HeadlessError:
+                continue
+
+        before = {p.name for p in download_dir.glob("*")}
+        self._call("Page.navigate", url=url)
+        textlen = self._await_render(min_text, render_timeout,
+                                     patient=self._headed, should_cancel=should_cancel)
+        if textlen < min_text:
+            log.info("save_via_button: κενή προβολή (%d χαρ.) για %s", textlen, url)
+            return None
+
+        clicked = self._call(
+            "Runtime.evaluate", expression=_SAVE_PDF_CLICK_JS, returnByValue=True
+        )
+        if not clicked.get("result", {}).get("value"):
+            log.info("save_via_button: δεν βρέθηκε κουμπί PDF στη σελίδα %s", url)
+            return None
+
+        # Το PDF φτιάχνεται client-side (αργεί) και μετά κατεβαίνει. Περιμένουμε να
+        # εμφανιστεί ΝΕΟ, ολοκληρωμένο .pdf στον φάκελο (όχι .crdownload).
+        deadline = time.time() + download_timeout
+        while time.time() < deadline:
+            if should_cancel and should_cancel():
+                raise HeadlessCancelled()
+            for p in download_dir.glob("*.pdf"):
+                if p.name in before:
+                    continue
+                if p.with_suffix(p.suffix + ".crdownload").exists():
+                    continue
+                try:
+                    data = p.read_bytes()
+                except OSError:
+                    continue
+                if data.startswith(b"%PDF") and len(data) > 1000:
+                    return data
+            time.sleep(0.5)
+        log.info("save_via_button: δεν εμφανίστηκε λήψη PDF εντός %ss", download_timeout)
+        return None
 
     def _await_render(
         self, min_text: int, timeout: float, patient: bool = False,

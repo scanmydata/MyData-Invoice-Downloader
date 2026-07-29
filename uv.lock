@@ -447,7 +447,7 @@ wheels = [
 
 [[package]]
 name = "timologio-downloader"
-version = "0.2.19"
+version = "0.2.22"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

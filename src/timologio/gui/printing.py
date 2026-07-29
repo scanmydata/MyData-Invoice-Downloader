@@ -22,54 +22,58 @@ from PySide6.QtCore import QRect, QSize, Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog
-from PySide6.QtWidgets import QApplication, QToolBar, QWidget
+from PySide6.QtWidgets import QApplication, QToolBar, QWidgetAction, QWidget
 
 from .icons import icon
 from .theme import CURRENT
 
 log = logging.getLogger(__name__)
 
-#: Ελληνικά tooltips για ΟΛΑ τα εργαλεία της native γραμμής (ταιριασμένα με το
-#: σταθερό αγγλικό ``text()`` της ενέργειας). Έτσι το hover δείχνει πάντα ελληνική
-#: εξήγηση αντί για κενό/αγγλικό.
-_TOOLBAR_TIPS = {
-    "Fit width": "Προσαρμογή στο πλάτος",
-    "Fit page": "Προσαρμογή σελίδας",
-    "Zoom out": "Σμίκρυνση",
-    "Zoom in": "Μεγέθυνση",
-    "Portrait": "Κατακόρυφος προσανατολισμός",
-    "Landscape": "Οριζόντιος προσανατολισμός",
-    "First page": "Πρώτη σελίδα",
-    "Previous page": "Προηγούμενη σελίδα",
-    "Next page": "Επόμενη σελίδα",
-    "Last page": "Τελευταία σελίδα",
-    "Show single page": "Μία σελίδα",
-    "Show facing pages": "Αντικριστές σελίδες",
-    "Show overview of all pages": "Επισκόπηση όλων των σελίδων",
-    "Page setup": "Διαμόρφωση σελίδας",
-    "Print": "Εκτύπωση",
-}
+#: Ελληνικά tooltips ΚΑΤΑ ΣΕΙΡΑ των εργαλείων της native γραμμής του Qt. Ταιριάζουμε
+#: κατά ΘΕΣΗ και όχι κατά ``text()``: το QPrintPreviewDialog φτιάχνει τα κουμπιά
+#: **χωρίς κείμενο** (μόνο εικονίδιο), οπότε το παλιό ταίριασμα με «Print»/«Zoom in»
+#: δεν έβρισκε ποτέ τίποτα — γι' αυτό δεν εμφανίζονταν ούτε tooltips ούτε τα δικά
+#: μας εικονίδια. Η σειρά είναι σταθερή σε όλες τις εκδόσεις του Qt (15 ενέργειες).
+_TOOLBAR_TIPS = [
+    "Προσαρμογή στο πλάτος",          # 0
+    "Προσαρμογή σελίδας",             # 1
+    "Σμίκρυνση",                      # 2
+    "Μεγέθυνση",                      # 3
+    "Κατακόρυφος προσανατολισμός",    # 4
+    "Οριζόντιος προσανατολισμός",     # 5
+    "Πρώτη σελίδα",                   # 6
+    "Προηγούμενη σελίδα",             # 7
+    "Επόμενη σελίδα",                 # 8
+    "Τελευταία σελίδα",               # 9
+    "Μία σελίδα",                     # 10
+    "Αντικριστές σελίδες",            # 11
+    "Επισκόπηση όλων των σελίδων",    # 12
+    "Διαμόρφωση σελίδας",             # 13
+    "Εκτύπωση",                       # 14
+]
 
-#: Κουμπιά που εμφανίζονταν **κενά** (τα εικονίδιά τους έρχονται από πόρους που το
-#: PyInstaller δεν πάντα πακετάρει): τους δίνουμε δικά μας SVG εικονίδια (που
-#: ζωγραφίζονται μόνα τους). Το ίδιο το preview μένει native.
-_TOOLBAR_ICONS = {
-    "Print": "printer",
-    "Zoom in": "zoom_in",
-    "Zoom out": "zoom_out",
-}
+#: Δικά μας SVG εικονίδια για όσα κουμπιά έβγαιναν **κενά** στο πακεταρισμένο
+#: build (τα εικονίδιά τους έρχονται από πόρους του Qt που το PyInstaller δεν
+#: πάντα περιλαμβάνει): ζουμ και εκτύπωση. Κλειδί = θέση στη γραμμή.
+_TOOLBAR_ICONS = {2: "zoom_out", 3: "zoom_in", 14: "printer"}
 
 
 def _fix_toolbar_icons(dialog: QPrintPreviewDialog) -> None:
     for toolbar in dialog.findChildren(QToolBar):
-        for action in toolbar.actions():
-            tip = _TOOLBAR_TIPS.get(action.text())
-            if tip:
+        # Μόνο οι ενέργειες-κουμπιά, με τη σειρά τους: πετάμε τους διαχωριστές
+        # και τα widget (το combo του ζουμ, το πεδίο αριθμού σελίδας).
+        actions = [
+            a for a in toolbar.actions()
+            if not a.isSeparator() and not isinstance(a, QWidgetAction)
+        ]
+        for i, action in enumerate(actions):
+            if i < len(_TOOLBAR_TIPS):
+                tip = _TOOLBAR_TIPS[i]
                 # Και τα δύο: το QToolButton δείχνει το toolTip στο hover, αλλά
                 # κάποια στυλ διαβάζουν το statusTip — τα ορίζουμε μαζί.
                 action.setToolTip(tip)
                 action.setStatusTip(tip)
-            name = _TOOLBAR_ICONS.get(action.text())
+            name = _TOOLBAR_ICONS.get(i)
             if name:
                 action.setIcon(icon(name, CURRENT.txt))
 

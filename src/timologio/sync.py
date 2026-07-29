@@ -9,7 +9,9 @@ from __future__ import annotations
 import logging
 import os
 import random
+import shutil
 import sqlite3
+import tempfile
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -620,6 +622,12 @@ def _open_renderer_with_fallback(
     raise AllBrowsersFailed()
 
 
+def _is_epsilon_docviewer(host: str, url: str) -> bool:
+    """Είναι Epsilon DocViewer (client-side PDF μέσω κουμπιού «Αποθήκευση ως PDF»);"""
+    blob = f"{host or ''} {url or ''}".lower()
+    return "epsilonnet.gr" in blob
+
+
 def _render_target_url(url: str) -> str:
     """Ποιο URL να τυπώσει ο browser σε PDF για ένα «μόνο online» παραστατικό.
 
@@ -678,6 +686,9 @@ def _render_viewer_batch(
     browsers = find_browsers()
     browser_idx = 0
     cancelled = False
+    # Προσωρινός φάκελος όπου κατεβάζει ο browser τα PDF του κουμπιού του παρόχου
+    # (Epsilon). Καθαρίζεται στο τέλος.
+    download_dir = Path(tempfile.mkdtemp(prefix="tl_dl_"))
     try:
         for i, row in enumerate(rows):
             label = row["client_label"] or row["client_vat"]
@@ -699,10 +710,26 @@ def _render_viewer_batch(
                         should_cancel=should_cancel, progress=progress,
                         profile_dir=profile_dir,
                     )
-                pdf = renderer.render_pdf(
-                    _render_target_url(row["downloading_invoice_url"]),
-                    patient=patient, timeout=timeout, should_cancel=should_cancel,
-                )
+                raw_url = row["downloading_invoice_url"]
+                if headed and _is_epsilon_docviewer(row["provider_host"], raw_url):
+                    # Epsilon: το επίσημο PDF φτιάχνεται μέσα στον browser όταν
+                    # πατηθεί το κουμπί «Αποθήκευση ως PDF». Το πατάμε εμείς (όπως
+                    # ο χρήστης) στο ΟΡΑΤΟ παράθυρο και πιάνουμε το αρχείο. Αν δεν
+                    # βρεθεί/δεν κατέβει, πέφτουμε στο print-to-PDF της σελίδας.
+                    pdf = renderer.save_via_button(
+                        raw_url, download_dir, render_timeout=timeout,
+                        should_cancel=should_cancel,
+                    )
+                    if pdf is None and not (should_cancel and should_cancel()):
+                        pdf = renderer.render_pdf(
+                            _render_target_url(raw_url), patient=patient,
+                            timeout=timeout, should_cancel=should_cancel,
+                        )
+                else:
+                    pdf = renderer.render_pdf(
+                        _render_target_url(raw_url),
+                        patient=patient, timeout=timeout, should_cancel=should_cancel,
+                    )
             except HeadlessCancelled:
                 cancelled = True
                 remaining.append(row)
@@ -745,6 +772,7 @@ def _render_viewer_batch(
                 renderer.close()
             except Exception:  # noqa: BLE001
                 pass
+        shutil.rmtree(download_dir, ignore_errors=True)
     return saved, failed, remaining
 
 
