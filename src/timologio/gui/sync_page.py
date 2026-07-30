@@ -178,7 +178,10 @@ class SyncPage(QWidget):
 
         # Έξυπνη (γρήγορη) λήψη: κατεβάζει PDF μόνο για τα αχαρακτήριστα έξοδα
         # του διαστήματος — ό,τι δηλαδή χρειάζεται ο λογιστής για να χαρακτηρίσει.
-        smart = QHBoxLayout()
+        # Έχει νόημα μόνο όταν κατεβαίνουν έξοδα, γι' αυτό εμφανίζεται μόνο τότε.
+        self._smart_row = QWidget()
+        smart = QHBoxLayout(self._smart_row)
+        smart.setContentsMargins(0, 0, 0, 0)
         smart.setSpacing(7)
         self.chk_smart = QCheckBox("Έξυπνη λήψη: μόνο αχαρακτήριστα έξοδα")
         self.chk_smart.setToolTip(
@@ -191,7 +194,11 @@ class SyncPage(QWidget):
         )
         smart.addWidget(self.chk_smart)
         smart.addStretch()
-        box.addLayout(smart)
+        box.addWidget(self._smart_row)
+        # Η ορατότητα ακολουθεί το «Έξοδα»: χωρίς έξοδα η έξυπνη λήψη δεν κάνει
+        # τίποτα, οπότε ούτε εμφανίζεται ούτε μένει «κρυφά τσεκαρισμένη».
+        self.chk_expense.toggled.connect(self._update_smart_visibility)
+        self._update_smart_visibility(self.chk_expense.isChecked())
         root.addWidget(card)
 
         # --- ποιοι πελάτες
@@ -276,6 +283,13 @@ class SyncPage(QWidget):
         self.date_to.set_gr(end.strftime("%d/%m/%Y"))
 
     # ------------------------------------------------------------- επιλογές
+    def _update_smart_visibility(self, expenses_on: bool) -> None:
+        """Η «Έξυπνη λήψη» αφορά μόνο έξοδα: εμφανίζεται μόνο όταν κατεβαίνουν
+        έξοδα και, όταν κρύβεται, ξετσεκάρεται ώστε να μη μείνει κρυφά ενεργή."""
+        self._smart_row.setVisible(expenses_on)
+        if not expenses_on:
+            self.chk_smart.setChecked(False)
+
     def smart_expenses_only(self) -> bool:
         """Έξυπνη λήψη: PDF μόνο για τα αχαρακτήριστα έξοδα του διαστήματος."""
         return self.chk_smart.isChecked()

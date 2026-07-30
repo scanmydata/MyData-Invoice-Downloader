@@ -247,10 +247,17 @@ class MainWindow(QMainWindow):
 
     # ----------------------------------------------------- ζωντανή ανανέωση
     def _db_mtime(self) -> float:
-        try:
-            return self.settings.db_path.stat().st_mtime
-        except OSError:
-            return 0.0
+        # Σε WAL mode τα commit γράφονται στο αρχείο -wal, όχι απαραίτητα στο ίδιο
+        # το .db (η ενοποίηση γίνεται στο checkpoint). Παίρνουμε το πιο πρόσφατο
+        # και των δύο ώστε η ζωντανή ανανέωση να πιάνει τις αλλαγές αμέσως.
+        newest = 0.0
+        for path in (self.settings.db_path,
+                     self.settings.db_path.with_name(self.settings.db_path.name + "-wal")):
+            try:
+                newest = max(newest, path.stat().st_mtime)
+            except OSError:
+                pass
+        return newest
 
     def _start_db_watch(self) -> None:
         """Ανανεώνει τη λίστα όταν η βάση αλλάζει από άλλον υπολογιστή.
@@ -1835,6 +1842,7 @@ class MainWindow(QMainWindow):
         self._teardown_headless()
         self.reload_clients()
         self._on_selection()
+        self.docs.reload()  # να φανούν αμέσως τα «κατέβηκε» στα Παραστατικά
         lines = [f"<b>{saved}</b> κατέβηκαν ως PDF"]
         if skipped:
             lines.append(
@@ -2344,6 +2352,10 @@ class MainWindow(QMainWindow):
             self._reload_timer.stop()
         self.reload_clients()
         self._on_selection()
+        # Η λίστα πελατών ενημέρωσε το _last_db_mtime, οπότε το _poll_db δεν θα
+        # ξαναφορτώσει μόνο του τα Παραστατικά. Τα ανανεώνουμε ρητά ώστε οι νέες
+        # καταστάσεις (π.χ. «κατέβηκε» μετά την έξυπνη λήψη) να φανούν αμέσως.
+        self.docs.reload()
         if completed:
             found, pdfs, no_url, viewer_only, failed = totals or (0, 0, 0, 0, 0)
             body = f"{found} παραστατικά · {pdfs} PDF"

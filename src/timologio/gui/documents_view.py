@@ -710,12 +710,39 @@ class DocumentsView(QWidget):
                 return r
         return None
 
+    #: Καταστάσεις που το διπλό κλικ ξαναπροσπαθεί να κατεβάσει επιτόπου.
+    _RETRY_ON_DOUBLE_CLICK = (
+        DocStatus.PENDING,
+        DocStatus.FAILED_RETRYABLE,
+        DocStatus.FAILED_PERMANENT,
+    )
+
+    def _current_status(self, row: sqlite3.Row) -> DocStatus | None:
+        """Η ΤΩΡΙΝΗ κατάσταση από τη βάση — όχι η (πιθανόν παλιά) του πίνακα.
+
+        Χωρίς αυτό, μετά από μια λήψη που δεν έχει ακόμη ανανεώσει τον πίνακα, το
+        διπλό κλικ θα έκρινε με βάση παλιά «αναμονή» και θα ξανακατέβαζε άσκοπα —
+        ή θα άνοιγε browser για κάτι ήδη κατεβασμένο.
+        """
+        if self._conn is None:
+            return None
+        cur = self._conn.execute(
+            "SELECT status FROM documents WHERE client_id=? AND mark=?",
+            (row["client_id"], row["mark"]),
+        ).fetchone()
+        if cur is None:
+            return None
+        try:
+            return DocStatus(cur["status"])
+        except ValueError:
+            return None
+
     def _on_double_click(self, index) -> None:
-        """Διπλό κλικ: αν η γραμμή είναι «σε αναμονή», κατεβάζει το παραστατικό
+        """Διπλό κλικ: αν η γραμμή εκκρεμεί ή απέτυχε, κατεβάζει το παραστατικό
         επιτόπου· αλλιώς αλλάζει την επιλογή (checkbox), όπως πάντα."""
         mark = self._mark_at_row(index.row())
         row = self._row_by_mark(mark) if mark else None
-        if row is not None and DocStatus(row["status"]) == DocStatus.PENDING:
+        if row is not None and self._current_status(row) in self._RETRY_ON_DOUBLE_CLICK:
             self._download_pending_row(row)
             return
         self._toggle_current()
