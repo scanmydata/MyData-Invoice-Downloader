@@ -271,6 +271,32 @@ def test_export_xlsx_is_a_sortable_table(conn: sqlite3.Connection, tmp_path: Pat
     assert sorted(float(v) for v in values) == [6.2, 12.4, 124.0]
 
 
+def test_export_includes_provider_link_column(conn: sqlite3.Connection,
+                                              tmp_path: Path) -> None:
+    """Η εξαγωγή περιλαμβάνει τον σύνδεσμο παρόχου κάθε παραστατικού — χρήσιμο
+    για όσα έχουν σφάλμα, ώστε να μπορεί ο χρήστης να τα ελέγξει μόνος του."""
+    openpyxl = pytest.importorskip("openpyxl")
+    out = tmp_path / "με-λινκ.xlsx"
+    export_documents_xlsx(conn, out, CLIENT_VAT)
+    ws = openpyxl.load_workbook(out).active
+    header = [c.value for c in ws[1]]
+    assert "Σύνδεσμος παρόχου" in header
+    link_col = header.index("Σύνδεσμος παρόχου") + 1
+    links = {ws.cell(row=r, column=link_col).value for r in range(2, 2 + 3)}
+    assert "https://x.gr/a" in links and "https://x.gr/b" in links
+
+
+def test_export_csv_includes_provider_link(conn: sqlite3.Connection,
+                                           tmp_path: Path) -> None:
+    from timologio.reports import export_documents
+
+    out = tmp_path / "με-λινκ.csv"
+    export_documents(conn, out, CLIENT_VAT)
+    text = out.read_text(encoding="utf-8-sig")
+    assert "Σύνδεσμος παρόχου" in text.splitlines()[0]
+    assert "https://x.gr/a" in text
+
+
 def test_export_xlsx_empty_client_still_valid(conn: sqlite3.Connection,
                                               tmp_path: Path) -> None:
     openpyxl = pytest.importorskip("openpyxl")

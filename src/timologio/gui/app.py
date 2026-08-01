@@ -117,8 +117,13 @@ def main(argv: list[str] | None = None) -> int:
 
     args = argv if argv is not None else sys.argv
     # Ο installer μας τρέχει με --show στο τέλος της εγκατάστασης, ώστε η πρώτη
-    # εμφάνιση να γίνεται κανονικά (όχι μαζεμένη στο tray).
-    force_show = "--show" in args
+    # εμφάνιση να γίνεται κανονικά (όχι μαζεμένη στο tray). Επιπλέον, ο installer
+    # γράφει σε ΚΑΘΕ εγκατάσταση/ενημέρωση μια μία-φορά σημαία στο μητρώο: την
+    # καταναλώνουμε εδώ ώστε η πρώτη εκκίνηση να ανοίγει κανονικά ακόμη κι αν το
+    # --show δεν έφτασε (π.χ. εκκίνηση από autostart μετά την ενημέρωση).
+    from ..config import consume_show_once
+
+    force_show = ("--show" in args) or consume_show_once()
 
     app = QApplication(args)
     app.setApplicationName("Timologio Downloader")
@@ -164,6 +169,11 @@ def main(argv: list[str] | None = None) -> int:
     # είναι η πρώτη εμφάνιση μετά την εγκατάσταση), το MainWindow._setup_tray
     # κρύβει αμέσως το παράθυρο.
     window.show()
+    # Μετά από εγκατάσταση/ενημέρωση: όχι απλώς ορατό, αλλά και μπροστά και
+    # ενεργό — αλλιώς σε κάποιες περιπτώσεις έμοιαζε «κρυμμένο» πίσω/στο tray.
+    if force_show:
+        window.raise_()
+        window.activateWindow()
     return app.exec()
 
 

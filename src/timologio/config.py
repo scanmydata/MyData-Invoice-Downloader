@@ -42,7 +42,7 @@ ROLES = ("standalone", "server", "terminal")
 #: Η έκδοση που δηλώνει το κάθε instance στους υπόλοιπους του δικτύου. Κρατιέται
 #: εδώ ώστε να υπάρχει μία πηγή: το pyproject δεν διαβάζεται μέσα από το bundle
 #: του PyInstaller.
-APP_VERSION = "0.2.23"
+APP_VERSION = "0.2.24"
 
 ROLE_LABELS_EL = {
     "standalone": "Αυτόνομος υπολογιστής",
@@ -95,6 +95,36 @@ def save_start_minimized(value: bool) -> None:
             winreg.SetValueEx(key, "StartMinimized", 0, winreg.REG_SZ, "1" if value else "0")
     except OSError:
         pass
+
+
+def consume_show_once() -> bool:
+    """Μία-φορά σημαία «δείξε κανονικά το παράθυρο» που γράφει ο installer σε
+    ΚΑΘΕ εγκατάσταση/ενημέρωση.
+
+    Επιστρέφει ``True`` αν ήταν αναμμένη και τη σβήνει. Έτσι η **πρώτη** εκκίνηση
+    μετά την εγκατάσταση ανοίγει κανονικά το παράθυρο, ακόμη κι αν έχει επιλεγεί
+    «εκκίνηση στο tray» — ανεξάρτητα από ποιο μονοπάτι ξεκίνησε την εφαρμογή
+    (κουμπί «Εκκίνηση» του installer, αυτόματη εκκίνηση, ή relaunch της
+    ενημέρωσης). Πιο αξιόπιστο από το ``--show``, που εξαρτάται από το αν το
+    σωστό όρισμα έφτασε στη σωστή διεργασία."""
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, _REG_PATH, 0, winreg.KEY_ALL_ACCESS
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, "ShowWindowOnce")
+            if str(value) == "1":
+                try:
+                    winreg.DeleteValue(key, "ShowWindowOnce")
+                except OSError:
+                    pass
+                return True
+    except OSError:
+        pass
+    return False
 
 
 def _documents_dir() -> Path:

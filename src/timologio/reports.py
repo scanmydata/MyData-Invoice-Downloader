@@ -384,7 +384,7 @@ def export_missing_keys(conn: sqlite3.Connection, path: Path) -> int:
 _DOC_HEADERS = [
     "ΑΦΜ Πελάτη", "Πελάτης", "MARK", "Κατεύθυνση", "Τύπος", "Ημ. Έκδοσης",
     "Σειρά", "ΑΑ", "ΑΦΜ Εκδότη", "Εκδότης", "Καθαρή Αξία", "ΦΠΑ",
-    "Σύνολο", "Χαρακτηρισμός", "Κατάσταση", "Αρχείο",
+    "Σύνολο", "Χαρακτηρισμός", "Κατάσταση", "Αρχείο", "Σύνδεσμος παρόχου",
 ]
 #: Δείκτες (0-based) των αριθμητικών στηλών — γράφονται ως πραγματικοί αριθμοί
 #: στο Excel, ώστε να ταξινομούνται/αθροίζονται σωστά.
@@ -409,6 +409,9 @@ def _doc_row_values(r: sqlite3.Row) -> list:
         float(r["total_value"] or 0),
         CLASSIFICATION_LABELS_EL[cls], status_el,
         r["local_path"] or r["xml_path"],
+        # Ο σύνδεσμος του παρόχου — χρήσιμος ειδικά για παραστατικά με σφάλμα,
+        # ώστε ο χρήστης να τον ανοίξει/κάνει inspect μόνος του.
+        r["downloading_invoice_url"] or "",
     ]
 
 
@@ -489,7 +492,7 @@ def export_documents(conn: sqlite3.Connection, path: Path, vat: str | None = Non
         writer.writerow([
             "ΑΦΜ Πελάτη", "Πελάτης", "MARK", "Κατεύθυνση", "Τύπος", "Ημ. Έκδοσης",
             "Σειρά", "ΑΑ", "ΑΦΜ Εκδότη", "Εκδότης", "Καθαρή Αξία", "ΦΠΑ",
-            "Σύνολο", "Χαρακτηρισμός", "Κατάσταση", "Αρχείο",
+            "Σύνολο", "Χαρακτηρισμός", "Κατάσταση", "Αρχείο", "Σύνδεσμος παρόχου",
         ])
         for r in rows:
             cls = Classification(r["classification"] or "unknown")
@@ -502,5 +505,7 @@ def export_documents(conn: sqlite3.Connection, path: Path, vat: str | None = Non
                 f"{r['total_value']:.2f}".replace(".", ","),
                 CLASSIFICATION_LABELS_EL[cls],
                 r["status"], r["local_path"] or r["xml_path"],
+                # Σύνδεσμος παρόχου — για έλεγχο/inspect, ειδικά στα σφάλματα.
+                r["downloading_invoice_url"] or "",
             ])
     return len(rows)

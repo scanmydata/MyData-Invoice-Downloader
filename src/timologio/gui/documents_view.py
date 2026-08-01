@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -360,6 +361,8 @@ class DocumentsView(QWidget):
         self.table.setSortingEnabled(True)
         setup_columns(self.table, _COLS, self._prefs, "documents")
         self.table.doubleClicked.connect(self._on_double_click)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._table_context_menu)
         self.table.itemChanged.connect(self._on_item_changed)
         root.addWidget(self.table, 1)
 
@@ -622,6 +625,20 @@ class DocumentsView(QWidget):
             status = DocStatus(r["status"])
             cls = Classification(r["classification"] or "unknown")
 
+            # Για παραστατικά με σφάλμα δείχνουμε τον σύνδεσμο του παρόχου στο
+            # tooltip, ώστε ο χρήστης να τον δει (και με δεξί κλικ να τον
+            # αντιγράψει/ανοίξει και να κάνει ο ίδιος inspect).
+            url = r["downloading_invoice_url"] or ""
+            is_error = status in (
+                DocStatus.FAILED_RETRYABLE, DocStatus.FAILED_PERMANENT
+            )
+            tip = f"ΜΑΡΚ {r['mark']}"
+            if is_error and url:
+                tip += (
+                    "\nΣφάλμα λήψης — σύνδεσμος παρόχου "
+                    f"(δεξί κλικ → Αντιγραφή/Άνοιγμα):\n{url}"
+                )
+
             check = QTableWidgetItem()
             check.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
                            | Qt.ItemFlag.ItemIsSelectable)
@@ -663,7 +680,7 @@ class DocumentsView(QWidget):
                 if col == 12:
                     item.setForeground(QColor(_status_color(status)))
                 item.setData(_MARK_ROLE, r["mark"])
-                item.setToolTip(f"ΜΑΡΚ {r['mark']}")
+                item.setToolTip(tip)
                 self.table.setItem(i, col, item)
 
             self.table.setCellWidget(i, _COL_OPEN, self._open_button(r))
@@ -736,6 +753,28 @@ class DocumentsView(QWidget):
             return DocStatus(cur["status"])
         except ValueError:
             return None
+
+    def _table_context_menu(self, pos) -> None:
+        """Δεξί κλικ σε παραστατικό: αντιγραφή/άνοιγμα του συνδέσμου παρόχου —
+        ώστε ο χρήστης να τον κάνει μόνος του inspect (χρήσιμο στα σφάλματα)."""
+        index = self.table.indexAt(pos)
+        if not index.isValid():
+            return
+        mark = self._mark_at_row(index.row())
+        row = self._row_by_mark(mark) if mark else None
+        if row is None:
+            return
+        url = row["downloading_invoice_url"] or ""
+        menu = QMenu(self.table)
+        act_copy = menu.addAction("Αντιγραφή συνδέσμου παρόχου")
+        act_open = menu.addAction("Άνοιγμα συνδέσμου στον browser")
+        act_copy.setEnabled(bool(url))
+        act_open.setEnabled(bool(url))
+        chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if chosen is act_copy and url:
+            QApplication.clipboard().setText(url)
+        elif chosen is act_open and url:
+            QDesktopServices.openUrl(QUrl(url))
 
     def _on_double_click(self, index) -> None:
         """Διπλό κλικ: αν η γραμμή εκκρεμεί ή απέτυχε, κατεβάζει το παραστατικό

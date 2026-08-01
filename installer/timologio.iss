@@ -7,7 +7,7 @@
 ; Build:  "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\timologio.iss
 
 #define AppName        "Timologio Downloader"
-#define AppVersion     "0.2.23"
+#define AppVersion     "0.2.24"
 #define AppPublisher   "scanmydata"
 #define AppExeName     "TimologioDownloader.exe"
 
@@ -102,6 +102,11 @@ Root: HKCU; Subkey: "Software\scanmydata\TimologioDownloader"; ValueType: string
     ValueName: "Role"; ValueData: "{code:GetRole}"; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\scanmydata\TimologioDownloader"; ValueType: string; \
     ValueName: "StartMinimized"; ValueData: "{code:GetStartMinimized}"; Flags: uninsdeletevalue
+; Μία-φορά σημαία: η ΠΡΩΤΗ εκκίνηση μετά από κάθε εγκατάσταση/ενημέρωση ανοίγει
+; κανονικά το παράθυρο (όχι στο tray), όποιο μονοπάτι κι αν την ξεκίνησε. Η
+; εφαρμογή τη σβήνει μόλις τη διαβάσει (config.consume_show_once).
+Root: HKCU; Subkey: "Software\scanmydata\TimologioDownloader"; ValueType: string; \
+    ValueName: "ShowWindowOnce"; ValueData: "1"; Flags: uninsdeletevalue
 ; HKCU\...\Run: αυτόματη εκκίνηση μόνο για τον χρήστη που εγκατέστησε, χωρίς
 ; δικαιώματα διαχειριστή.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; \

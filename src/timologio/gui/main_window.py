@@ -1385,6 +1385,9 @@ class MainWindow(QMainWindow):
                 self._checked -= set(targets)
             self.conn.commit()
             self.reload_clients()
+            # Και ο πίνακας Παραστατικών: αν ο χρήστης τον έβλεπε, έδειχνε ακόμη
+            # τα μόλις-σβησμένα/μηδενισμένα παραστατικά μέχρι να πατήσει Ανανέωση.
+            self.docs.reload()
             # Το reload καθαρίζει την επιλογή με μπλοκαρισμένα signals, οπότε το
             # _on_selection δεν τρέχει· χωρίς αυτό το panel θα έμενε ανοιχτό
             # δείχνοντας αριθμούς που μόλις σβήστηκαν.
@@ -2256,24 +2259,35 @@ class MainWindow(QMainWindow):
             if len(vats) == 1 else "παραστατικά"
         )
 
-        # 1) Ρωτάμε πρώτα ρητά τη μορφή — Excel (ταξινομήσιμος πίνακας) ή CSV.
-        box = QMessageBox(self)
-        box.setWindowTitle("Εξαγωγή")
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setText(f"Σε τι μορφή να γίνει η εξαγωγή για {who};")
-        box.setInformativeText(
-            "• <b>Excel (.xlsx)</b> — πραγματικός πίνακας με ταξινόμηση/φίλτρα\n"
-            "• <b>CSV</b> — απλό κείμενο, για εισαγωγή αλλού"
+        # 1) Επιλογή μορφής από αναπτυσσόμενο μενού (roller) — Excel ή CSV.
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Εξαγωγή")
+        dialog.setMinimumWidth(420)
+        box_lay = QVBoxLayout(dialog)
+        box_lay.setSpacing(10)
+        box_lay.addWidget(QLabel(f"Μορφή αρχείου για <b>{who}</b>:"))
+        combo = QComboBox()
+        combo.addItem("Excel (.xlsx) — ταξινομήσιμος πίνακας με φίλτρα", "excel")
+        combo.addItem("CSV (.csv) — απλό κείμενο για εισαγωγή αλλού", "csv")
+        box_lay.addWidget(combo)
+        hint = QLabel(
+            "Το αρχείο περιλαμβάνει και τον σύνδεσμο του παρόχου κάθε "
+            "παραστατικού — χρήσιμο για όσα έχουν σφάλμα."
         )
-        btn_excel = box.addButton("Excel", QMessageBox.ButtonRole.AcceptRole)
-        btn_csv = box.addButton("CSV", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("Άκυρο", QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(btn_excel)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked not in (btn_excel, btn_csv):
+        hint.setObjectName("muted")
+        hint.setWordWrap(True)
+        box_lay.addWidget(hint)
+        bb = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        bb.button(QDialogButtonBox.StandardButton.Ok).setText("Συνέχεια")
+        bb.button(QDialogButtonBox.StandardButton.Cancel).setText("Άκυρο")
+        bb.accepted.connect(dialog.accept)
+        bb.rejected.connect(dialog.reject)
+        box_lay.addWidget(bb)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        is_excel = clicked is btn_excel
+        is_excel = combo.currentData() == "excel"
         suffix = ".xlsx" if is_excel else ".csv"
         kind = "Excel" if is_excel else "CSV"
         writer = export_documents_xlsx if is_excel else export_documents
