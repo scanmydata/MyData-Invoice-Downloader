@@ -207,6 +207,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE documents ADD COLUMN classification TEXT NOT NULL DEFAULT 'unknown'"
         )
+    # Ημερομηνία εκτύπωσης (ISO), για τη στήλη «Εκτυπώθηκε» στα Παραστατικά.
+    if "print_date" not in existing:
+        conn.execute(
+            "ALTER TABLE documents ADD COLUMN print_date TEXT NOT NULL DEFAULT ''"
+        )
 
     # Επαναταξινόμηση των «οριστικών σφαλμάτων» που στην πραγματικότητα είναι
     # παραστατικά μόνο-online (ο πάροχος έδωσε σελίδα προβολής αντί για PDF).

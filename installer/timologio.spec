@@ -7,10 +7,54 @@
 # Χρήση:  uv run pyinstaller installer/timologio.spec --noconfirm
 
 import os
+import re
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
+
+
+def _app_version(root):
+    """Η έκδοση από το config.py — μία πηγή αλήθειας, χωρίς σκληροκωδικοποίηση."""
+    try:
+        with open(os.path.join(root, "src", "timologio", "config.py"),
+                  encoding="utf-8") as fh:
+            match = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', fh.read())
+        return match.group(1) if match else "0.0.0"
+    except OSError:
+        return "0.0.0"
+
+
+def _write_version_resource(root, version):
+    """Γράφει VersionInfo (CompanyName/ProductName/… ) για το exe.
+
+    Ένα ανυπόγραφο PyInstaller exe ΧΩΡΙΣ στοιχεία εκδότη είναι το πιο συνηθισμένο
+    σκανάρισμα ψευδώς-θετικού από Defender/antivirus. Τα πλήρη VersionInfo δεν
+    αντικαθιστούν την ψηφιακή υπογραφή, αλλά δίνουν στον exe ταυτότητα/φήμη και
+    μειώνουν αισθητά τα heuristic flags. Επιστρέφει τη διαδρομή του αρχείου."""
+    vt = tuple(int(x) for x in (version.split(".") + ["0", "0", "0"])[:4])
+    content = f"""VSVersionInfo(
+  ffi=FixedFileInfo(filevers={vt}, prodvers={vt}, mask=0x3f, flags=0x0,
+                    OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
+  kids=[
+    StringFileInfo([StringTable('040804b0', [
+      StringStruct('CompanyName', 'scanmydata'),
+      StringStruct('FileDescription',
+                   'Timologio Downloader - maziki lipsi parastatikon myDATA (AADE)'),
+      StringStruct('FileVersion', '{version}'),
+      StringStruct('InternalName', 'TimologioDownloader'),
+      StringStruct('LegalCopyright', '(c) scanmydata'),
+      StringStruct('OriginalFilename', 'TimologioDownloader.exe'),
+      StringStruct('ProductName', 'Timologio Downloader'),
+      StringStruct('ProductVersion', '{version}')])]),
+    VarFileInfo([VarStruct('Translation', [1032, 1200])])])
+"""
+    build_dir = os.path.join(root, "build")
+    os.makedirs(build_dir, exist_ok=True)
+    path = os.path.join(build_dir, "version_info.txt")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    return path
 
 # Το tzdata είναι πακέτο μόνο-δεδομένων: το zoneinfo το βρίσκει με
 # importlib.resources, κάτι που το PyInstaller δεν μπορεί να δει διαβάζοντας
@@ -22,6 +66,7 @@ TZDATA = collect_data_files("tzdata")
 # αυτόν και όχι με τη ρίζα του έργου.
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 ICON = os.path.join(SPECPATH, "icon.ico")
+VERSION_RC = _write_version_resource(ROOT, _app_version(ROOT))
 
 a = Analysis(
     [os.path.join(ROOT, "entry.py")],
@@ -98,6 +143,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=ICON if os.path.exists(ICON) else None,
+    version=VERSION_RC,
 )
 
 coll = COLLECT(

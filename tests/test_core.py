@@ -135,7 +135,7 @@ def test_target_path_uses_requested_naming_scheme(tmp_path: Path) -> None:
                    counter_vat="123456783", series="ΤΔΑ", aa="1",
                    issue_date="2026-01-02", total_value=40.29)
     path = target_path(tmp_path, "123456783", doc)
-    assert path.name == "ΧΡΩΜΑΤΑ ΠΑΡΑΔΕΙΓΜΑ ΟΕ_987654324_2026-01-02_ΤΔΑ_1_40,29.pdf"
+    assert path.name == "ΧΡΩΜΑΤΑ ΠΑΡΑΔΕΙΓΜΑ ΟΕ_987654324_02-01-2026_ΤΔΑ_1_40,29.pdf"
     assert path.parent.name == "01" and path.parent.parent.name == "2026"
     assert path.is_relative_to(tmp_path / "123456783")
 
@@ -169,7 +169,7 @@ def test_missing_supplier_name_falls_back_to_vat(tmp_path: Path) -> None:
                    counter_vat="123456783", series="Β", aa="5",
                    issue_date="2026-07-01", total_value=14.69)
     name = target_path(tmp_path, "123456783", doc).name
-    assert name == "094173365_2026-07-01_Β_5_14,69.pdf"
+    assert name == "094173365_01-07-2026_Β_5_14,69.pdf"
     assert "ΑΓΝΩΣΤΟΣ" not in name
 
 
@@ -180,7 +180,7 @@ def test_long_supplier_name_is_capped_not_path_overflow(tmp_path: Path) -> None:
                    issue_date="2026-01-03", total_value=1234.56)
     path = target_path(tmp_path, "123456783", doc)
     assert len(str(path)) < 260, "δεν πρέπει να ξεπερνά το MAX_PATH"
-    assert path.name.endswith("_094222211_2026-01-03_ΤΔ137_001689250_1234,56.pdf")
+    assert path.name.endswith("_094222211_03-01-2026_ΤΔ137_001689250_1234,56.pdf")
 
 
 def test_target_path_survives_missing_date(tmp_path: Path) -> None:

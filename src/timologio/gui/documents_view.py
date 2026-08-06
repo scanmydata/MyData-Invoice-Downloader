@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import repo
 from ..config import Settings
 from ..models import CLASSIFICATION_LABELS_EL, Classification, DocStatus
 from ..reports import (
@@ -69,6 +70,7 @@ _COLS: list[tuple[str, int, str]] = [
     ("Σύνολο", 88, "Συνολική αξία"),
     ("Χαρακτ.", 116, "Κατάσταση χαρακτηρισμού (χαρακτηρισμένο ή όχι)"),
     ("Κατάσταση", 104, "Αν κατέβηκε το PDF του παρόχου"),
+    ("Εκτυπώθηκε", 96, "Ημερομηνία εκτύπωσης (κενό = δεν έχει εκτυπωθεί ακόμη)"),
     ("", 38, "Άνοιγμα αρχείου"),
 ]
 
@@ -94,12 +96,14 @@ _COL_VATNO = 5
 _COL_NET, _COL_VAT, _COL_GROSS = 8, 9, 10
 _COL_CLS = 11
 _COL_STATUS = 12
+_COL_PRINTED = 13
 _COL_OPEN = len(_COLS) - 1
 
-#: Στήλες με γρήγορο φίλτρο (Excel-style) στην κεφαλίδα: κατηγορικές τιμές (και η
-#: ημερομηνία) που αξίζει να φιλτράρονται με λίστα — όχι ποσά/αύξοντες αριθμούς.
+#: Στήλες με γρήγορο φίλτρο (Excel-style) στην κεφαλίδα: κατηγορικές τιμές (και οι
+#: ημερομηνίες) που αξίζει να φιλτράρονται με λίστα — όχι ποσά/αύξοντες αριθμούς.
 _FILTERABLE_COLS = (
-    _COL_DATE, _COL_KIND, _COL_TYPE, _COL_PARTY, _COL_VATNO, _COL_CLS, _COL_STATUS
+    _COL_DATE, _COL_KIND, _COL_TYPE, _COL_PARTY, _COL_VATNO, _COL_CLS,
+    _COL_STATUS, _COL_PRINTED,
 )
 
 #: Τρεις ανεξάρτητοι άξονες αντί για έναν κατάλογο αμοιβαία αποκλειόμενων
@@ -388,6 +392,13 @@ class DocumentsView(QWidget):
             row.addLayout(box)
             row.addSpacing(22)
             self._total_labels[key] = val
+            if key == "count":
+                # Έντονο «μπαλόνι» με τα επιλεγμένα, ακριβώς δίπλα στο σύνολο των
+                # παραστατικών — ώστε να ξεχωρίζει πόσα έχει τσεκάρει ο χρήστης.
+                self._selected_badge = QLabel("")
+                self._selected_badge.setVisible(False)
+                row.addWidget(self._selected_badge)
+                row.addSpacing(22)
         row.addStretch()
         root.addWidget(self.totals)
 
@@ -543,6 +554,30 @@ class DocumentsView(QWidget):
         )
         self.banner.setVisible(True)
 
+    def _search_haystack(self, r: sqlite3.Row) -> str:
+        """Όλα τα πεδία μιας γραμμής σε ένα ενιαίο, πεζό κείμενο για αναζήτηση.
+
+        Έτσι η αναζήτηση πιάνει ΚΑΘΕ στήλη: ΑΦΜ, σειρά, συναλλασσόμενο, τύπο,
+        ημερομηνία (και στη μορφή ηη/μμ/εεεε), είδος, ποσά (και όπως εμφανίζονται
+        και σε ακατέργαστη μορφή, ώστε «1234» να βρίσκει και «1.234,56»)."""
+        is_income = r["issuer_vat"] == self._vat
+        keys = r.keys()
+        parts = [
+            r["mark"], r["series"] or "", r["aa"] or "",
+            r["issuer_name"] or "", r["counter_name"] or "",
+            r["issuer_vat"] or "", r["counter_vat"] or "",
+            r["invoice_type"] or "",
+            r["issue_date"] or "", _gr_date(r["issue_date"]),
+            "έσοδο" if is_income else "έξοδο",
+            money(r["net_value"] or 0), money(r["vat_amount"] or 0),
+            money(r["total_value"] or 0),
+            str(r["net_value"] or ""), str(r["vat_amount"] or ""),
+            str(r["total_value"] or ""),
+        ]
+        if "print_date" in keys and r["print_date"]:
+            parts.extend([r["print_date"], _gr_date(r["print_date"])])
+        return " ".join(parts).lower()
+
     def _col_value(self, r: sqlite3.Row, col: int) -> str:
         """Η εμφανιζόμενη τιμή μιας γραμμής σε μια φιλτραρίσιμη στήλη — ίδια με
         αυτήν που δείχνει ο πίνακας, ώστε τα φίλτρα στήλης να ταιριάζουν οπτικά."""
@@ -563,6 +598,9 @@ class DocumentsView(QWidget):
             ]
         if col == _COL_STATUS:
             return _STATUS_SHORT[DocStatus(r["status"])]
+        if col == _COL_PRINTED:
+            pd = r["print_date"] if "print_date" in r.keys() else ""
+            return _gr_date(pd) if pd else "—"
         return ""
 
     def _distinct_col_values(self, col: int) -> list[str]:
@@ -593,15 +631,7 @@ class DocumentsView(QWidget):
         needle = self.search.text().strip().lower()
         rows = self._rows
         if needle:
-            rows = [
-                r for r in rows
-                if needle in (r["issuer_name"] or "").lower()
-                or needle in (r["counter_name"] or "").lower()
-                or needle in (r["issuer_vat"] or "")
-                or needle in (r["counter_vat"] or "")
-                or needle in r["mark"]
-                or needle in (r["series"] or "").lower()
-            ]
+            rows = [r for r in rows if needle in self._search_haystack(r)]
 
         # Φίλτρα στήλης (Excel-style): κρατάμε μόνο τις γραμμές που η τιμή τους σε
         # κάθε φιλτραρισμένη στήλη ανήκει στις επιλεγμένες.
@@ -649,6 +679,7 @@ class DocumentsView(QWidget):
             check.setData(_MARK_ROLE, r["mark"])
             self.table.setItem(i, _COL_CHECK, check)
 
+            printed_iso = r["print_date"] if "print_date" in r.keys() else ""
             cells = {
                 _COL_DATE: _gr_date(r["issue_date"]),
                 _COL_KIND: "Έσοδο" if is_income else "Έξοδο",
@@ -660,10 +691,13 @@ class DocumentsView(QWidget):
                 _COL_GROSS: money(r["total_value"] or 0),
                 11: CLASSIFICATION_LABELS_EL[cls],
                 12: _STATUS_SHORT[status],
+                _COL_PRINTED: _gr_date(printed_iso) if printed_iso else "—",
             }
             for col, text in cells.items():
                 if col == _COL_DATE:
                     item = SortableItem(text, r["issue_date"] or "")
+                elif col == _COL_PRINTED:
+                    item = SortableItem(text, printed_iso)
                 elif col in (_COL_NET, _COL_VAT, _COL_GROSS):
                     amount = [r["net_value"], r["vat_amount"], r["total_value"]][
                         col - _COL_NET
@@ -679,6 +713,8 @@ class DocumentsView(QWidget):
                     item.setForeground(QColor(_cls_color(cls)))
                 if col == 12:
                     item.setForeground(QColor(_status_color(status)))
+                if col == _COL_PRINTED and printed_iso:
+                    item.setForeground(QColor(CURRENT.ok))
                 item.setData(_MARK_ROLE, r["mark"])
                 item.setToolTip(tip)
                 self.table.setItem(i, col, item)
@@ -701,9 +737,18 @@ class DocumentsView(QWidget):
 
     def _update_totals_caption(self) -> None:
         picked = len(self._checked)
-        self._total_caption.setText(
-            f"Παραστατικά ({picked} επιλεγμένα)" if picked else "Παραστατικά"
-        )
+        # Η λεζάντα μένει σταθερή· τα επιλεγμένα φαίνονται στο χρωματιστό μπαλόνι
+        # δίπλα στο σύνολο, ώστε να τα προσέχει αμέσως ο χρήστης.
+        self._total_caption.setText("Παραστατικά")
+        if picked:
+            self._selected_badge.setText(f"✓ {picked} επιλεγμένα")
+            self._selected_badge.setStyleSheet(
+                f"background:{CURRENT.accent}; color:{CURRENT.on_accent};"
+                "border-radius:11px; padding:3px 12px; font-weight:700;"
+            )
+            self._selected_badge.setVisible(True)
+        else:
+            self._selected_badge.setVisible(False)
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != _COL_CHECK:
@@ -938,11 +983,14 @@ class DocumentsView(QWidget):
             return
 
         paths: list[Path] = []
+        printed_marks: list[str] = []
+        printed_cid = rows[0]["client_id"]
         for r in rows:
             if r["local_path"]:
                 candidate = self._settings.storage_root / r["local_path"]
                 if candidate.exists():
                     paths.append(candidate)
+                    printed_marks.append(r["mark"])
         if not paths:
             QMessageBox.information(
                 self, "Εκτύπωση",
@@ -969,8 +1017,19 @@ class DocumentsView(QWidget):
         from .printing import print_pdfs
 
         # Ανοίγει προεπισκόπηση· η εκτύπωση γίνεται από εκεί. Δεν δείχνουμε
-        # μήνυμα «στάλθηκε» — το preview είναι η ίδια η επιβεβαίωση.
-        prepared, failed = print_pdfs(paths, self)
+        # μήνυμα «στάλθηκε» — το preview είναι η ίδια η επιβεβαίωση. Όταν ο
+        # χρήστης πατήσει «Εκτύπωση», σημειώνουμε την ημερομηνία εκτύπωσης.
+        def _record_print() -> None:
+            if self._conn is None:
+                return
+            from datetime import date
+
+            repo.mark_printed(
+                self._conn, printed_cid, printed_marks, date.today().isoformat()
+            )
+            self.reload()
+
+        prepared, failed = print_pdfs(paths, self, on_print=_record_print)
         if failed and not prepared:
             QMessageBox.warning(
                 self, "Εκτύπωση",

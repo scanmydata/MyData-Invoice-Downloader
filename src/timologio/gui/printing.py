@@ -16,13 +16,21 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QRect, QSize, Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog
-from PySide6.QtWidgets import QApplication, QToolBar, QWidgetAction, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QLineEdit,
+    QToolBar,
+    QWidgetAction,
+    QWidget,
+)
 
 from .icons import icon
 from .theme import CURRENT
@@ -54,8 +62,34 @@ _TOOLBAR_TIPS = [
 
 #: Δικά μας SVG εικονίδια για όσα κουμπιά έβγαιναν **κενά** στο πακεταρισμένο
 #: build (τα εικονίδιά τους έρχονται από πόρους του Qt που το PyInstaller δεν
-#: πάντα περιλαμβάνει): ζουμ και εκτύπωση. Κλειδί = θέση στη γραμμή.
-_TOOLBAR_ICONS = {2: "zoom_out", 3: "zoom_in", 14: "printer"}
+#: πάντα περιλαμβάνει): ζουμ, πλοήγηση σελίδων και εκτύπωση. Κλειδί = θέση στη
+#: γραμμή. Η πλοήγηση (πρώτη/προηγ./επόμ./τελευταία) έβγαινε αόρατη γιατί τα
+#: native βελάκια του Qt δεν πακετάρονταν — γι' αυτό «δεν φαίνονταν» τα κουμπιά
+#: επόμενης/προηγούμενης σελίδας.
+_TOOLBAR_ICONS = {
+    2: "zoom_out", 3: "zoom_in",
+    6: "nav_first", 7: "nav_prev", 8: "nav_next", 9: "nav_last",
+    14: "printer",
+}
+
+
+def _fix_toolbar_combos(dialog: QPrintPreviewDialog) -> None:
+    """Κάνει ορατά το dropdown του ζουμ και το πεδίο αριθμού σελίδας.
+
+    Στο σκούρο θέμα το popup του combo έβγαινε με κείμενο στο χρώμα του φόντου —
+    ο χρήστης έβλεπε ένα άδειο κουτί. Δίνουμε ρητά χρώματα κειμένου/φόντου (και
+    στη λίστα του popup) χωρίς να αγγίξουμε την ίδια την προεπισκόπηση."""
+    field_qss = (
+        f"color:{CURRENT.txt}; background:{CURRENT.panel};"
+        f"selection-background-color:{CURRENT.accent}; selection-color:{CURRENT.on_accent};"
+    )
+    for combo in dialog.findChildren(QComboBox):
+        combo.setStyleSheet(
+            f"QComboBox {{ {field_qss} }}"
+            f"QComboBox QAbstractItemView {{ {field_qss} }}"
+        )
+    for edit in dialog.findChildren(QLineEdit):
+        edit.setStyleSheet(f"QLineEdit {{ {field_qss} }}")
 
 
 def _fix_toolbar_icons(dialog: QPrintPreviewDialog) -> None:
@@ -76,6 +110,24 @@ def _fix_toolbar_icons(dialog: QPrintPreviewDialog) -> None:
             name = _TOOLBAR_ICONS.get(i)
             if name:
                 action.setIcon(icon(name, CURRENT.txt))
+    _fix_toolbar_combos(dialog)
+
+
+def _wire_print_action(dialog: QPrintPreviewDialog, on_print: Callable[[], None]) -> None:
+    """Συνδέει το κουμπί «Εκτύπωση» της γραμμής εργαλείων με το ``on_print``.
+
+    Έτσι, μόλις ο χρήστης στείλει τα παραστατικά στον εκτυπωτή, καταγράφεται η
+    ημερομηνία εκτύπωσης (στήλη «Εκτυπώθηκε»). Η εκτύπωση είναι η τελευταία
+    ενέργεια (θέση 14) της σταθερής γραμμής του Qt."""
+    for toolbar in dialog.findChildren(QToolBar):
+        actions = [
+            a for a in toolbar.actions()
+            if not a.isSeparator() and not isinstance(a, QWidgetAction)
+        ]
+        if len(actions) > 14:
+            actions[14].triggered.connect(lambda *_: on_print())
+            return
+
 
 #: Ανάλυση απόδοσης της σελίδας σε εικόνα. 200 DPI διαβάζεται άνετα και κρατά
 #: μια σελίδα A4 γύρω στα ~15MP αντί για ~35MP στα 300 DPI.
@@ -91,11 +143,16 @@ def _load(doc: QPdfDocument, path: Path) -> bool:
     return doc.status() == QPdfDocument.Status.Ready and doc.pageCount() > 0
 
 
-def print_pdfs(paths: list[Path], parent: QWidget | None = None) -> tuple[int, int]:
+def print_pdfs(
+    paths: list[Path],
+    parent: QWidget | None = None,
+    on_print: Callable[[], None] | None = None,
+) -> tuple[int, int]:
     """Ανοίγει προεπισκόπηση εκτύπωσης για όλα τα PDF. Επιστρέφει ``(έτοιμα,
     απέτυχαν)`` — «έτοιμα» = παραστατικά που μπήκαν στην προεπισκόπηση.
 
-    Η ίδια η εκτύπωση γίνεται από τη γραμμή εργαλείων της προεπισκόπησης.
+    Η ίδια η εκτύπωση γίνεται από τη γραμμή εργαλείων της προεπισκόπησης. Το
+    προαιρετικό ``on_print`` καλείται όταν ο χρήστης πατήσει «Εκτύπωση» εκεί.
     """
     paths = [p for p in paths if p.exists()]
     if not paths:
@@ -157,6 +214,8 @@ def print_pdfs(paths: list[Path], parent: QWidget | None = None) -> tuple[int, i
     # Τα κουμπιά «Εκτύπωση / Ζουμ +/−» έδειχναν κενά περιγράμματα: τους δίνουμε
     # δικά μας εικονίδια. Το υπόλοιπο preview μένει αυτούσιο (native).
     _fix_toolbar_icons(dialog)
+    if on_print is not None:
+        _wire_print_action(dialog, on_print)
     dialog.paintRequested.connect(render)
     if parent is not None:
         dialog.resize(parent.size())

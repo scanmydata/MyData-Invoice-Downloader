@@ -7,7 +7,7 @@
 ; Build:  "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\timologio.iss
 
 #define AppName        "Timologio Downloader"
-#define AppVersion     "0.2.24"
+#define AppVersion     "0.2.25"
 #define AppPublisher   "scanmydata"
 #define AppExeName     "TimologioDownloader.exe"
 
@@ -33,6 +33,18 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\{#AppExeName}
+; Στοιχεία εκδότη στο ίδιο το setup.exe. Ένα ανυπόγραφο installer ΧΩΡΙΣ VersionInfo
+; είναι από τα πρώτα που «σηκώνει» το SmartScreen/Defender ως άγνωστο — τα πλήρη
+; στοιχεία δίνουν ταυτότητα και μειώνουν τα ψευδώς-θετικά (και στην εγκατάσταση και
+; στην ενημέρωση, που τρέχει το ίδιο setup.exe). ΔΕΝ αντικαθιστούν την ψηφιακή
+; υπογραφή (Authenticode) — αυτή χρειάζεται πιστοποιητικό code-signing.
+VersionInfoVersion={#AppVersion}
+VersionInfoProductVersion={#AppVersion}
+VersionInfoCompany={#AppPublisher}
+VersionInfoProductName={#AppName}
+VersionInfoDescription=Εγκατάσταση {#AppName}
+VersionInfoCopyright=© scanmydata
+VersionInfoOriginalFileName=TimologioDownloader-{#AppVersion}-setup.exe
 ; Εικονίδιο του ίδιου του setup.exe και γραφικά του οδηγού. Παράγονται από το
 ; logo.svg με το make_icon.py — ο Inno δέχεται μόνο .ico και .bmp εδώ.
 SetupIconFile=icon.ico

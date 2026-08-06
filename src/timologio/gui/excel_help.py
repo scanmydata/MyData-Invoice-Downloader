@@ -88,7 +88,7 @@ class ExcelHelpDialog(QDialog):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Από πού βγάζω το Excel;")
+        self.setWindowTitle("Εξαγωγή κωδικών σε μορφή Excel")
         self.setMinimumWidth(520)
 
         root = QVBoxLayout(self)

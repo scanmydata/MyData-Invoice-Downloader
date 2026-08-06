@@ -63,7 +63,7 @@ def test_save_online_only_pdf_files_and_marks_downloaded(
     assert path.exists()
     assert path.read_bytes() == payload
     assert size == len(payload)
-    assert path.name == "ΧΡΩΜΑΤΑ ΠΑΡΑΔΕΙΓΜΑ ΟΕ_987654324_2026-01-02_ΤΔΑ_1_40,29.pdf"
+    assert path.name == "ΧΡΩΜΑΤΑ ΠΑΡΑΔΕΙΓΜΑ ΟΕ_987654324_02-01-2026_ΤΔΑ_1_40,29.pdf"
     assert path.is_relative_to(settings.storage_root)
     # Ο φάκελος του πελάτη είναι «<ΑΦΜ> <επωνυμία>» / έτος / μήνας.
     assert path.parent.parent.parent.name.startswith(CLIENT_VAT)

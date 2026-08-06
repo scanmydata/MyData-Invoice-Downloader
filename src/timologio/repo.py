@@ -62,7 +62,6 @@ def upsert_client(conn: sqlite3.Connection, client: Client, crypto: Crypto) -> i
     conn.execute(
         """
         UPDATE clients SET status = CASE
-            WHEN status = 'disabled' THEN 'disabled'
             WHEN mydata_user_enc <> '' AND mydata_key_enc <> '' THEN 'ready'
             ELSE 'missing_key' END
         WHERE vat = ?
@@ -91,26 +90,39 @@ def get_client(conn: sqlite3.Connection, vat: str, crypto: Crypto) -> Client | N
     )
 
 
-def set_client_disabled(conn: sqlite3.Connection, vat: str, disabled: bool) -> None:
-    """Ενεργοποιεί/απενεργοποιεί πελάτη.
+def mark_printed(
+    conn: sqlite3.Connection, client_id: int, marks: list[str], when_iso: str
+) -> int:
+    """Καταγράφει την ημερομηνία εκτύπωσης για τα δοσμένα παραστατικά.
 
-    Ανενεργός (`disabled`) σημαίνει ότι εξαιρείται από τη λήψη — δεν εμφανίζεται
-    στη λίστα της σελίδας λήψης (φιλτράρεται με `status='ready'`), αλλά μένει στη
-    λίστα πελατών. Η επανενεργοποίηση ξαναϋπολογίζει την κατάσταση από τα
-    credentials (όπως το `upsert_client`), ώστε ένας χωρίς κλειδί να μη γίνει
-    κατά λάθος «ready».
+    Καλείται όταν ο χρήστης στείλει τα επιλεγμένα στον εκτυπωτή από την
+    προεπισκόπηση — ώστε η στήλη «Εκτυπώθηκε» να δείχνει πότε τυπώθηκε το καθένα.
     """
-    if disabled:
-        conn.execute("UPDATE clients SET status='disabled' WHERE vat=?", (vat,))
-    else:
-        conn.execute(
-            """UPDATE clients SET status = CASE
-                   WHEN mydata_user_enc <> '' AND mydata_key_enc <> '' THEN 'ready'
-                   ELSE 'missing_key' END
-               WHERE vat=?""",
-            (vat,),
-        )
+    if not marks:
+        return 0
+    cur = conn.executemany(
+        "UPDATE documents SET print_date=? WHERE client_id=? AND mark=?",
+        [(when_iso, client_id, m) for m in marks],
+    )
     conn.commit()
+    return cur.rowcount or 0
+
+
+def normalize_disabled_clients(conn: sqlite3.Connection) -> int:
+    """Επαναφέρει σε φυσιολογική κατάσταση όσους πελάτες είχαν μείνει «disabled».
+
+    Η χειροκίνητη ενεργοποίηση/απενεργοποίηση καταργήθηκε: η «κατάσταση» ενός
+    πελάτη προκύπτει πλέον μόνο από το αν έχει διαπιστευτήρια (ready) ή όχι
+    (missing_key). Παλιές βάσεις μπορεί να έχουν ακόμη «disabled» εγγραφές που
+    αλλιώς θα έμεναν για πάντα έξω από τη λήψη — τις ξαναϋπολογίζουμε μία φορά."""
+    cur = conn.execute(
+        """UPDATE clients SET status = CASE
+               WHEN mydata_user_enc <> '' AND mydata_key_enc <> '' THEN 'ready'
+               ELSE 'missing_key' END
+           WHERE status='disabled'"""
+    )
+    conn.commit()
+    return cur.rowcount or 0
 
 
 def delete_clients(conn: sqlite3.Connection, vats: list[str]) -> int:

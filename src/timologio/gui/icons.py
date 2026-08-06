@@ -74,6 +74,11 @@ _SVG: dict[str, str] = {
         '<line x1="6" y1="17.5" x2="6.01" y2="17.5"/>'
     ),
     "back": '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
+    # Πλοήγηση σελίδων στην προεπισκόπηση εκτύπωσης (πρώτη/προηγ./επόμ./τελευταία).
+    "nav_first": '<polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/>',
+    "nav_prev": '<polyline points="15 18 9 12 15 6"/>',
+    "nav_next": '<polyline points="9 18 15 12 9 6"/>',
+    "nav_last": '<polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/>',
     "search": '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
     # Χωνί: γρήγορο φίλτρο στην κεφαλίδα στήλης.
     "filter": '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',

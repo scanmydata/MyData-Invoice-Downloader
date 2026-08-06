@@ -83,6 +83,17 @@ def long_path(path: Path) -> str:
     return text
 
 
+def _date_for_name(iso: str) -> str:
+    """Ημερομηνία ΗΗ-ΜΜ-ΕΕΕΕ για το όνομα αρχείου.
+
+    Ο λογιστής διαβάζει τις ημερομηνίες ελληνικά (ημέρα-μήνας-έτος). Χρησιμοποιούμε
+    παύλες και όχι καθέτους: η «/» δεν επιτρέπεται σε ονόματα αρχείων στα Windows.
+    """
+    if len(iso) >= 10 and iso[4] == "-" and iso[7] == "-":
+        return f"{iso[8:10]}-{iso[5:7]}-{iso[:4]}"
+    return sanitize(iso, "00-00-0000")
+
+
 def _stem(doc: Document, client_vat: str, name_cap: int = NAME_CAP) -> str:
     """<ΠΡΟΜΗΘΕΥΤΗΣ>_<ΑΦΜ>_<ΗΜ/ΝΙΑ>_<ΣΕΙΡΑ>_<ΑΑ>_<ΑΞΙΑ>
 
@@ -99,7 +110,7 @@ def _stem(doc: Document, client_vat: str, name_cap: int = NAME_CAP) -> str:
         parts.append(supplier)
     parts += [
         sanitize(vat, "χωρίς ΑΦΜ"),
-        sanitize(doc.issue_date, "0000-00-00"),
+        _date_for_name(doc.issue_date),
         sanitize(doc.series, "0"),
         sanitize(doc.aa, "0"),
         sanitize(format_amount(doc.total_value)),

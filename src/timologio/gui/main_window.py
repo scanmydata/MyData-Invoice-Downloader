@@ -106,7 +106,6 @@ TOUR_VERSION = 2
 #: Σύντομη ετικέτα: το «Λείπει κλειδί API» έτρωγε 110px για να πει το ίδιο.
 _STATUS_READY = "Διαθέσιμος"
 _STATUS_NO_KEY = "Χωρίς κλειδί"
-_STATUS_DISABLED = "Ανενεργός"
 _COLUMNS = [c[0] for c in _COLUMN_SPEC]
 _COL_CHECK, _COL_VAT, _COL_LABEL, _COL_STATUS = 0, 1, 2, 3
 _COL_LAST = 9
@@ -143,6 +142,9 @@ class MainWindow(QMainWindow):
         # χρήστης θα έβλεπε «χάθηκαν οι πελάτες» αντί για «δεν βρίσκω τον server».
         self._connection_problem = self._check_terminal_connection()
         self.conn = init_db(self.settings.db_path)
+        # Η χειροκίνητη ενεργοποίηση/απενεργοποίηση καταργήθηκε — ξεκολλάμε όσους
+        # πελάτες τυχόν έμειναν «disabled» σε παλιότερη έκδοση.
+        repo.normalize_disabled_clients(self.conn)
         self.crypto = Crypto(self.settings.enckey_path)
         self._prefs = QSettings("scanmydata", "TimologioDownloader")
         self._thread: QThread | None = None
@@ -508,7 +510,7 @@ class MainWindow(QMainWindow):
         selbar.addWidget(self.lbl_selcount)
         selbar.addStretch()
 
-        hint = QLabel("Κλικ στο κουτάκι για επιλογή · διπλό κλικ: ενεργός/ανενεργός")
+        hint = QLabel("Κλικ στο κουτάκι για επιλογή · διπλό κλικ: επιλογή/αποεπιλογή")
         hint.setObjectName("muted")
         selbar.addWidget(hint)
 
@@ -574,9 +576,8 @@ class MainWindow(QMainWindow):
         backspace = QShortcut(QKeySequence(Qt.Key.Key_Backspace), self)
         backspace.setContext(Qt.ShortcutContext.WindowShortcut)
         backspace.activated.connect(self._delete_selected)
-        # Το κουτάκι επιλογής αλλάζει ΜΟΝΟ με άμεσο κλικ πάνω του ή με τα κουμπιά
-        # «Επιλογή/Αποεπιλογή όλων» — όχι με διπλό κλικ ή πλήκτρο διαστήματος,
-        # ώστε να μη μπερδεύεται με την ενεργοποίηση/απενεργοποίηση πελάτη.
+        # Το κουτάκι επιλογής αλλάζει με άμεσο κλικ πάνω του, με τα κουμπιά
+        # «Επιλογή/Αποεπιλογή όλων», ή με διπλό κλικ στη γραμμή (γρήγορος τρόπος).
         holder_box.addWidget(self.table)
         splitter.addWidget(table_holder)
 
@@ -700,12 +701,7 @@ class MainWindow(QMainWindow):
             expense = (s["expense"] if s else 0.0) or 0.0
             client_status = row["status"]
             is_ready = client_status == "ready"
-            is_disabled = client_status == "disabled"
-            status_label = (
-                _STATUS_READY if is_ready
-                else _STATUS_DISABLED if is_disabled
-                else _STATUS_NO_KEY
-            )
+            status_label = _STATUS_READY if is_ready else _STATUS_NO_KEY
 
             check = QTableWidgetItem()
             # Επιλέξιμοι ΟΛΟΙ, ακόμη κι όσοι δεν έχουν κλειδί: το τσεκάρισμα
@@ -748,11 +744,7 @@ class MainWindow(QMainWindow):
                 else:
                     item = QTableWidgetItem(text)
                 if col == _COL_STATUS:
-                    item.setForeground(QColor(
-                        CURRENT.ok if is_ready
-                        else CURRENT.muted if is_disabled
-                        else CURRENT.bad
-                    ))
+                    item.setForeground(QColor(CURRENT.ok if is_ready else CURRENT.bad))
                 if col == 5 and done:
                     item.setForeground(QColor(CURRENT.ok))
                 if col == 6 and uncls:
@@ -761,10 +753,6 @@ class MainWindow(QMainWindow):
                     item.setForeground(QColor(CURRENT.ok))
                 if col == 8 and expense:
                     item.setForeground(QColor(CURRENT.warn))
-                # Ανενεργός πελάτης: όλη η γραμμή γκριζαρισμένη (εκτός του
-                # κελιού κατάστασης που κρατά το δικό του χρώμα).
-                if is_disabled and col != _COL_STATUS:
-                    item.setForeground(QColor(CURRENT.muted))
                 self.table.setItem(i, col, item)
 
         self.table.setSortingEnabled(True)
@@ -833,31 +821,13 @@ class MainWindow(QMainWindow):
                         cell.setBackground(QColor(CURRENT.chip))
                 return
 
-    def _on_double_click(self) -> None:
-        """Διπλό κλικ σε γραμμή πελάτη.
+    def _on_double_click(self, index) -> None:
+        """Διπλό κλικ σε γραμμή πελάτη: επιλογή/αποεπιλογή (checkbox) του πελάτη.
 
-        Χωρίς κλειδί, το μόνο χρήσιμο είναι να το συμπληρώσει (άνοιγμα
-        επεξεργασίας). Με κλειδί, εναλλάσσει ενεργό/ανενεργό: ο ανενεργός
-        εξαιρείται από τη λήψη αλλά μένει στη λίστα.
-        """
-        rows = {i.row() for i in self.table.selectedIndexes()}
-        if len(rows) != 1:
-            return
-        row = next(iter(rows))
-        status = self.table.item(row, _COL_STATUS)
-        vat_item = self.table.item(row, _COL_VAT)
-        if status is None or vat_item is None:
-            return
-        if status.text() == _STATUS_NO_KEY:
-            self.on_edit_client(vat_item.text())
-            return
-        self._toggle_active(vat_item.text(), status.text() == _STATUS_DISABLED)
-
-    def _toggle_active(self, vat: str, currently_disabled: bool) -> None:
-        """Ενεργοποιεί/απενεργοποιεί έναν πελάτη και ανανεώνει τη λίστα."""
-        repo.set_client_disabled(self.conn, vat, not currently_disabled)
-        log.info("Πελάτης %s: %s", vat, "ενεργός" if currently_disabled else "ανενεργός")
-        self.reload_clients()
+        Το checkbox ορίζει ποιοι μπαίνουν στις μαζικές ενέργειες (λήψη/διαγραφή).
+        Το διπλό κλικ είναι ο γρήγορος τρόπος να τον βάλει/βγάλει χωρίς να
+        σημαδέψει το μικρό κουτάκι."""
+        self._toggle_checked({index.row()})
 
     def _toggle_checked(self, rows: set[int]) -> None:
         self.table.blockSignals(True)
@@ -1084,7 +1054,7 @@ class MainWindow(QMainWindow):
 
     def _select_and_check_vat(self, vat: str) -> None:
         """Επιλέγει (φωτίζει) και τσεκάρει τη γραμμή του πελάτη, αν είναι
-        διαθέσιμος (έχει κλειδί). Ανενεργοί/χωρίς κλειδί δεν κατεβαίνουν."""
+        διαθέσιμος (έχει κλειδί). Όσοι δεν έχουν κλειδί δεν κατεβαίνουν."""
         for i in range(self.table.rowCount()):
             vit = self.table.item(i, _COL_VAT)
             sit = self.table.item(i, _COL_STATUS)
@@ -1250,18 +1220,6 @@ class MainWindow(QMainWindow):
         docs.setEnabled(len(selected) == 1)
         menu.addAction(docs)
 
-        # Ενεργός/Ανενεργός — μόνο για μονή επιλογή πελάτη με κλειδί.
-        status_item = self.table.item(row, _COL_STATUS)
-        status_text = status_item.text() if status_item is not None else ""
-        if len(selected) == 1 and status_text in (_STATUS_READY, _STATUS_DISABLED):
-            is_off = status_text == _STATUS_DISABLED
-            toggle = QAction(
-                "Ενεργοποίηση πελάτη" if is_off else "Απενεργοποίηση πελάτη", self
-            )
-            toggle.triggered.connect(
-                lambda _=False, v=vat, d=is_off: self._toggle_active(v, d)
-            )
-            menu.addAction(toggle)
         menu.addSeparator()
 
         wipe = QAction(icon("wipe", CURRENT.warn), "Εκκαθάριση ληφθέντων", self)
@@ -1909,8 +1867,8 @@ class MainWindow(QMainWindow):
                 "ψηφίο, η επωνυμία έρχεται μόνη της — δεν χρειάζεται να πατήσετε "
                 "τίποτα. Αν το ΑΦΜ το ξέρουμε ήδη, μπαίνει ακαριαία· αλλιώς "
                 "ρωτιέται το VIES.\n\n"
-                "Μετά συμπληρώστε το κλειδί myDATA. Στο ίδιο παράθυρο υπάρχει "
-                "και η μαζική εισαγωγή από Excel.",
+                "Μετά συμπληρώστε το myDATA REST API key. Στο ίδιο παράθυρο "
+                "υπάρχει και η μαζική εισαγωγή από Excel.",
                 lambda: self.menu.button("add_client"),
             ),
             Step(
@@ -1919,8 +1877,7 @@ class MainWindow(QMainWindow):
                 "η επιλογή σας και για τη λήψη και για μαζικές ενέργειες.\n\n"
                 "Για να σβήσετε πολλούς μαζί: τσεκάρετέ τους και πατήστε "
                 "Delete, ή δεξί κλικ → «Διαγραφή N επιλεγμένων πελατών».\n\n"
-                "Διπλό κλικ σε πελάτη τον (απο)επιλέγει. Αν δεν έχει κλειδί, "
-                "ανοίγει το παράθυρο για να το βάλετε. Με δεξί κλικ: "
+                "Διπλό κλικ σε πελάτη τον (απο)επιλέγει γρήγορα. Με δεξί κλικ: "
                 "επεξεργασία, εκκαθάριση ή διαγραφή.",
                 lambda: self.table,
                 lambda: self._show_page("clients"),

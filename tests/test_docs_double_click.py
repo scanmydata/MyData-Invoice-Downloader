@@ -105,3 +105,51 @@ def test_double_click_toggles_when_already_downloaded(view: DocumentsView, monke
 
     view._on_double_click(_Idx())
     assert called == ["TOGGLE"]  # ήδη κατεβασμένο → δεν ξανακατεβαίνει
+
+
+# --- Αναζήτηση σε όλες τις στήλες ------------------------------------------
+
+def test_search_haystack_covers_all_columns(view: DocumentsView) -> None:
+    from timologio.gui.documents_view import _COL_PRINTED
+
+    hay = view._search_haystack(_row(view))
+    assert "987654324" in hay          # ΑΦΜ εκδότη
+    assert "10/07/2026" in hay         # ημερομηνία σε ελληνική μορφή (ηη/μμ/εεεε)
+    assert "2026-07-10" in hay         # και σε ISO
+    assert "έξοδο" in hay              # είδος
+    assert _COL_PRINTED  # η στήλη υπάρχει ως σταθερά
+
+
+def test_search_matches_amount_typed_plainly(view: DocumentsView) -> None:
+    view._conn.execute("UPDATE documents SET net_value=1234.56 WHERE mark='m1'")
+    view._conn.commit()
+    view.reload()
+    hay = view._search_haystack(_row(view))
+    assert "1234" in hay               # «1234» βρίσκει και «1.234,56»
+
+
+# --- Χρωματιστό μπαλόνι επιλεγμένων ----------------------------------------
+
+def test_selected_badge_shows_only_when_checked(view: DocumentsView) -> None:
+    # isHidden(): ανεξάρτητο του αν έχει εμφανιστεί το top-level παράθυρο.
+    assert view._selected_badge.isHidden()
+    view._checked.add("m1")
+    view._update_totals_caption()
+    assert not view._selected_badge.isHidden()
+    assert "1" in view._selected_badge.text()
+    view._checked.discard("m1")
+    view._update_totals_caption()
+    assert view._selected_badge.isHidden()
+
+
+# --- Στήλη «Εκτυπώθηκε» ----------------------------------------------------
+
+def test_printed_column_shows_gr_date(view: DocumentsView) -> None:
+    from timologio.gui.documents_view import _COL_PRINTED
+
+    row = _row(view)
+    assert view._col_value(row, _COL_PRINTED) == "—"
+    view._conn.execute("UPDATE documents SET print_date='2026-08-06' WHERE mark='m1'")
+    view._conn.commit()
+    view.reload()
+    assert view._col_value(_row(view), _COL_PRINTED) == "06/08/2026"
