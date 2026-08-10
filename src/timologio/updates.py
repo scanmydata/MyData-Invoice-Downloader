@@ -167,41 +167,38 @@ def build_updater_script(
         "function L($m){ (\"[{0}] {1}\" -f (Get-Date -Format 'HH:mm:ss'), $m) | "
         "Out-File -FilePath $log -Append -Encoding utf8 }\n"
         f"L ('start pid={int(pid)}')\n"
-        # Αν μας ξεκίνησε το Task Scheduler, σβήσε το task αμέσως: έχει ήδη
-        # πυροδοτηθεί, δεν το χρειαζόμαστε άλλο, και δεν θέλουμε να μείνει
-        # εγγεγραμμένο. Αν μας ξεκίνησε αλλιώς (fallback), το /Delete απλώς
-        # αποτυγχάνει σιωπηλά.
-        f"schtasks.exe /Delete /TN '{UPDATE_TASK_NAME}' /F 2>$null | Out-Null\n"
-        # Περίμενε πρώτα τη συγκεκριμένη διεργασία που ζήτησε την ενημέρωση…
-        f"Wait-Process -Id {int(pid)} -Timeout 60\n"
-        # …και μετά κάθε τυχόν άλλη ανοιχτή instance (π.χ. server + τερματικό στο
-        # ίδιο μηχάνημα), ώστε να μη μείνει κανείς να κλειδώνει τα αρχεία.
-        "$deadline=(Get-Date).AddSeconds(30)\n"
-        f"while ((Get-Process -Name {q(proc_name)} -ErrorAction SilentlyContinue) "
+        # Το ΚΡΙΣΙΜΟ βήμα (η εγκατάσταση) μπαίνει σε try/finally: ό,τι κι αν
+        # στραβώσει, (α) καταγράφεται με λεπτομέρεια και (β) η εφαρμογή ξανανοίγει
+        # πάντα στο finally — ποτέ δεν μένει ο χρήστης χωρίς πρόγραμμα ανοιχτό.
+        "try {\n"
+        # Αν μας ξεκίνησε το Task Scheduler, σβήσε το task — έχει ήδη πυροδοτηθεί.
+        f"  schtasks.exe /Delete /TN '{UPDATE_TASK_NAME}' /F 2>$null | Out-Null\n"
+        # Περίμενε τη διεργασία που ζήτησε την ενημέρωση…
+        f"  Wait-Process -Id {int(pid)} -Timeout 60\n"
+        # …και κάθε άλλη ανοιχτή instance (server + τερματικό στο ίδιο μηχάνημα).
+        "  $deadline=(Get-Date).AddSeconds(30)\n"
+        f"  while ((Get-Process -Name {q(proc_name)} -ErrorAction SilentlyContinue) "
         f"-and (Get-Date) -lt $deadline) {{ Start-Sleep -Milliseconds 500 }}\n"
-        # Δίχτυ ασφαλείας: αν κάποια instance επιμένει (π.χ. μαζεμένη στο tray),
-        # την κλείνουμε με τη βία — αλλιώς τα αρχεία μένουν κλειδωμένα και ο
-        # installer αποτυγχάνει σιωπηλά.
-        f"Stop-Process -Name {q(proc_name)} -Force -ErrorAction SilentlyContinue\n"
-        "L 'instances stopped'\n"
-        # ΚΡΙΣΙΜΟ: ο πυρήνας του Windows απελευθερώνει τα mapped DLL (Qt κ.λπ.) με
-        # καθυστέρηση ΜΕΤΑ τον τερματισμό. Αντί για σταθερό sleep, περιμένουμε
-        # ενεργά μέχρι το exe να ΞΕΚΛΕΙΔΩΣΕΙ (ανοίγει για αποκλειστική εγγραφή),
-        # ώστε ο installer να μη βρει κλειδωμένα αρχεία και αποτύχει σιωπηλά.
-        f"$exe={q(app_exe)}\n"
-        "$d2=(Get-Date).AddSeconds(25)\n"
-        "while ((Get-Date) -lt $d2) { try { "
-        "$fs=[IO.File]::Open($exe,'Open','ReadWrite','None'); $fs.Close(); break "
-        "} catch { Start-Sleep -Milliseconds 400 } }\n"
-        "Start-Sleep -Seconds 1\n"
-        "L 'running installer'\n"
-        f"$p=Start-Process -Wait -PassThru -FilePath {q(setup)} -ArgumentList @({args})\n"
-        "L ('installer exit=' + $(if ($p) { $p.ExitCode } else { 'null' }))\n"
+        f"  Stop-Process -Name {q(proc_name)} -Force -ErrorAction SilentlyContinue\n"
+        "  L 'instances stopped'\n"
+        # ΓΙΑΤΙ ΟΧΙ πια χειροκίνητη αναμονή ξεκλειδώματος αρχείων (ήταν εδώ που
+        # «κόλλαγε» ενίοτε η ενημέρωση): τη δουλειά την κάνει πλέον ο ΙΔΙΟΣ ο
+        # installer μέσω του Restart Manager (CloseApplications=yes στο .iss),
+        # που κλείνει ό,τι κρατά ακόμη κλειδωμένα αρχεία. Ένας μικρός σταθερός
+        # χρόνος αρκεί για να απελευθερώσει ο kernel τα mapped DLL.
+        "  Start-Sleep -Seconds 3\n"
+        "  L 'running installer'\n"
+        f"  $p=Start-Process -Wait -PassThru -FilePath {q(setup)} -ArgumentList @({args})\n"
+        "  L ('installer exit=' + $(if ($p) { $p.ExitCode } else { 'null' }))\n"
+        "} catch {\n"
+        "  L ('ERROR: ' + $_.Exception.Message)\n"
+        "} finally {\n"
         # --show: μετά την ενημέρωση ο χρήστης πρέπει να ΔΕΙ την εφαρμογή, όχι να
-        # «εξαφανιστεί» στο tray (ισχύει ακόμη κι αν έχει επιλεγεί «εκκίνηση στο
-        # tray» — αυτή η εκκίνηση είναι το αποτέλεσμα μιας ρητής ενημέρωσης).
-        f"Start-Process -FilePath {q(app_exe)} -ArgumentList '--show'\n"
-        "L 'relaunched'\n"
+        # «εξαφανιστεί» στο tray. Τρέχει ΠΑΝΤΑ (και σε αποτυχία) ώστε ο χρήστης να
+        # μη μείνει χωρίς ανοιχτό πρόγραμμα.
+        f"  Start-Process -FilePath {q(app_exe)} -ArgumentList '--show'\n"
+        "  L 'relaunched'\n"
+        "}\n"
     )
 
 

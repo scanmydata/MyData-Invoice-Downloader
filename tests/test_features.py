@@ -184,17 +184,21 @@ def test_updater_script_waits_installs_relaunches():
     # ΚΡΙΣΙΜΟ: ρητό /DIR στον φάκελο που τρέχει η εφαρμογή — αλλιώς η νέα έκδοση
     # μπορεί να εγκατασταθεί αλλού και το relaunch να ανοίξει την παλιά.
     assert r"/DIR=C:\Programs\App" in script
-    # Αναμονή για ξεκλείδωμα αρχείων πριν την εγκατάσταση: πρώτα κάθε instance
-    # με το όνομα, μετά force-kill ό,τι επιμένει, μετά ενεργή αναμονή μέχρι το exe
-    # να ξεκλειδώσει — αλλιώς η αναβάθμιση δεν πιάνει.
+    # Κλείνει κάθε instance πριν την εγκατάσταση· τα κλειδωμένα αρχεία τα
+    # αναλαμβάνει πλέον ο Restart Manager του installer (CloseApplications στο
+    # .iss), όχι εύθραυστη χειροκίνητη αναμονή ξεκλειδώματος.
     assert "Get-Process -Name 'App'" in script
     assert "Stop-Process -Name 'App' -Force" in script
-    assert "[IO.File]::Open($exe" in script  # ενεργή αναμονή ξεκλειδώματος
+    # Η εγκατάσταση σε try/finally: πάντα καταγράφεται και πάντα ξανανοίγει η
+    # εφαρμογή, ακόμη κι αν κάτι στραβώσει.
+    assert "try {" in script and "} finally {" in script
+    assert "ERROR: " in script  # καταγραφή σφάλματος στο catch
     # Μετά την ενημέρωση ο χρήστης πρέπει να ΔΕΙ την εφαρμογή, όχι να μαζευτεί
     # στο tray: η επανεκκίνηση περνά --show.
     assert "-ArgumentList '--show'" in script
     assert script.index("Get-Process -Name 'App'") < script.index("setup.exe")
-    assert script.index("[IO.File]::Open($exe") < script.index("setup.exe")
+    # Η επανεκκίνηση (--show) γίνεται ΜΕΤΑ την εγκατάσταση, στο finally.
+    assert script.index("setup.exe") < script.rindex("--show")
     # Ο installer γράφει log, ΚΑΙ το ίδιο το script καταγράφει κάθε βήμα με ώρα,
     # ώστε μια αποτυχία «η ενημέρωση δεν δουλεύει» να είναι πάντα ορατή.
     assert "/LOG=" in script

@@ -7,7 +7,7 @@
 ; Build:  "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\timologio.iss
 
 #define AppName        "Timologio Downloader"
-#define AppVersion     "0.2.25"
+#define AppVersion     "0.2.26"
 #define AppPublisher   "scanmydata"
 #define AppExeName     "TimologioDownloader.exe"
 
@@ -55,6 +55,15 @@ WizardImageFile=wizard-large.bmp
 WizardImageStretch=no
 ; Το bundle είναι ~120MB· χωρίς αυτό ο installer μπορεί να χτυπήσει σε 32bit όριο.
 LZMAUseSeparateProcess=yes
+; ΑΞΙΟΠΙΣΤΗ ΕΝΗΜΕΡΩΣΗ: αν κάποια διεργασία κρατά ακόμη κλειδωμένα αρχεία (π.χ.
+; ένα instance που δεν πρόλαβε να κλείσει), ο ίδιος ο installer τα κλείνει μέσω
+; του Windows Restart Manager αντί να αποτύχει σιωπηλά. Έτσι η αυτόματη
+; ενημέρωση δεν εξαρτάται από το να «μαντέψει» σωστά ο updater πότε ξεκλείδωσαν
+; τα αρχεία. RestartApplications=no: την επανεκκίνηση την κάνει ο updater (με
+; --show), δεν θέλουμε διπλή.
+CloseApplications=yes
+CloseApplicationsFilter=*.exe,*.dll,*.pyd
+RestartApplications=no
 
 [Languages]
 ; Το Inno Setup 6 δεν συνοδεύεται από επίσημο Greek.isl, οπότε ξεκινάμε από το
