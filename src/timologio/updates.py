@@ -224,7 +224,9 @@ def powershell_exe() -> str:
     return str(full) if full.exists() else "powershell"
 
 
-def launch_detached(script_path: Path) -> bool:
+def launch_detached(
+    script_path: Path, *, run_log: Path | None = None, start_token: str | None = None,
+) -> bool:
     """Ξεκινά το PowerShell script της ενημέρωσης ΑΠΟΣΠΑΣΜΕΝΑ από την εφαρμογή,
     ώστε να επιβιώσει του κλεισίματός της. Επιστρέφει ``True`` αν ξεκίνησε.
 
@@ -237,13 +239,73 @@ def launch_detached(script_path: Path) -> bool:
     scheduled task τρέχει κάτω από την υπηρεσία του χρονοπρογραμματιστή, εντελώς
     έξω από το job της εφαρμογής, οπότε επιβιώνει πάντα. Ο απλός detached τρόπος
     μένει ως εφεδρεία για συστήματα όπου το schtasks είναι απενεργοποιημένο.
+
+    ΕΠΑΛΗΘΕΥΣΗ (κρίσιμο για «universal»): το ``schtasks`` έχει παρατηρηθεί να
+    επιστρέφει **επιτυχία** ενώ το task μένει σε κατάσταση *Queued* και ΔΕΝ
+    εκτελείται ποτέ — τότε ο παλιός κώδικας γύριζε ``True`` και δεν δοκίμαζε ποτέ
+    την εφεδρεία, κι έτσι «η ενημέρωση δεν δούλευε» σιωπηλά. Τώρα, αν δοθεί
+    ``run_log``+``start_token``, περιμένουμε να εμφανιστεί το token (το script το
+    γράφει ως ΠΡΩΤΗ του ενέργεια). Αν δεν εμφανιστεί, θεωρούμε ότι ο τρόπος
+    απέτυχε και δοκιμάζουμε τον επόμενο. Έτσι κερδίζει όποιος τρόπος όντως τρέχει
+    στο συγκεκριμένο μηχάνημα, κι αν κανένας δεν τρέξει επιστρέφουμε ``False`` (ο
+    καλών δείχνει τότε μήνυμα για χειροκίνητη λήψη).
     """
     ps = powershell_exe()
+    since = run_log.stat().st_size if (run_log and run_log.exists()) else 0
+
+    def started() -> bool:
+        if run_log is None or start_token is None:
+            return True  # χωρίς log δεν γίνεται επαλήθευση — δεχόμαστε το «ξεκίνησε»
+        return _wait_for_marker(run_log, start_token, since, timeout=6.0)
+
     if _schedule_via_task(ps, script_path):
-        log.info("Ενημέρωση: ξεκίνησε μέσω Task Scheduler.")
-        return True
-    log.warning("Ενημέρωση: το Task Scheduler απέτυχε — δοκιμή απευθείας.")
-    return _launch_via_popen(ps, script_path)
+        if started():
+            log.info("Ενημέρωση: ξεκίνησε μέσω Task Scheduler.")
+            return True
+        log.warning("Ενημέρωση: το task έμεινε σε αναμονή/δεν έτρεξε — δοκιμή απευθείας.")
+        _delete_update_task()
+
+    if _launch_via_popen(ps, script_path):
+        if started():
+            log.info("Ενημέρωση: ξεκίνησε ως detached process.")
+            return True
+        log.warning("Ενημέρωση: ο detached τρόπος δεν εκτέλεσε το script.")
+
+    log.error("Ενημέρωση: δεν κατάφερε να ξεκινήσει με κανέναν τρόπο.")
+    return False
+
+
+def _wait_for_marker(run_log: Path, token: str, since: int, timeout: float) -> bool:
+    """Περιμένει έως ``timeout`` δευτ. να εμφανιστεί το ``token`` στο ``run_log``,
+    γραμμένο ΜΕΤΑ το ``since`` offset (ώστε να μη μπερδευτεί με προηγούμενη
+    ενημέρωση). Το script το γράφει ως πρώτη ενέργεια — άρα η εμφάνισή του
+    σημαίνει ότι όντως ξεκίνησε."""
+    import time
+
+    needle = token.encode("utf-8")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with open(run_log, "rb") as fh:
+                fh.seek(since)
+                if needle in fh.read():
+                    return True
+        except OSError:
+            pass
+        time.sleep(0.25)
+    return False
+
+
+def _delete_update_task() -> None:
+    """Σβήνει το task ενημέρωσης σιωπηλά (π.χ. έμεινε Queued και πάμε σε εφεδρεία),
+    ώστε να μην τρέξει αργότερα και ξεκινήσει δεύτερη εγκατάσταση."""
+    try:
+        subprocess.run(
+            ["schtasks", "/Delete", "/TN", UPDATE_TASK_NAME, "/F"],
+            capture_output=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def _schedule_via_task(powershell: str, script_path: Path) -> bool:
@@ -252,6 +314,12 @@ def _schedule_via_task(powershell: str, script_path: Path) -> bool:
         f'"{powershell}" -NoProfile -ExecutionPolicy Bypass '
         f'-WindowStyle Hidden -NonInteractive -File "{script_path}"'
     )
+    # Το schtasks απορρίπτει /TR πάνω από 261 χαρακτήρες (π.χ. μεγάλο όνομα
+    # χρήστη ή βαθύ %TEMP%). Μη σπαταλάμε χρόνο σε σίγουρη αποτυχία — πάμε
+    # κατευθείαν στον detached τρόπο.
+    if len(tr) > 261:
+        log.warning("Ενημέρωση: /TR %d χαρ. (>261) — παράλειψη Task Scheduler.", len(tr))
+        return False
     # Το /ST είναι υποχρεωτικό αλλά το /Run το πυροδοτεί ούτως ή άλλως αμέσως·
     # βάζουμε ένα έγκυρο μελλοντικό HH:MM για να μη γκρινιάξει το schtasks.
     start_time = (datetime.now() + timedelta(minutes=1)).strftime("%H:%M")

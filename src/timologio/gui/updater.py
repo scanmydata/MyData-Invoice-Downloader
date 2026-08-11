@@ -252,7 +252,13 @@ class Updater(QObject):
         # Το script τρέχει μέσω Task Scheduler (ή, ως εφεδρεία, detached process),
         # ώστε να επιβιώσει του κλεισίματος της εφαρμογής ακόμη κι όταν αυτή τρέχει
         # μέσα σε Job Object με kill-on-close — δείτε updates.launch_detached.
-        if not updates.launch_detached(script_path):
+        # Περνάμε run_log + start_token ώστε το launch_detached να ΕΠΑΛΗΘΕΥΣΕΙ ότι
+        # το script όντως ξεκίνησε (το task μπορεί να μείνει «Queued») και, αν όχι,
+        # να πέσει αυτόματα στην εφεδρεία — αλλιώς «η ενημέρωση δεν δούλευε» σιωπηλά.
+        run_log = setup.with_name("timologio_update_run.log")
+        if not updates.launch_detached(
+            script_path, run_log=run_log, start_token=f"start pid={os.getpid()}",
+        ):
             QMessageBox.warning(
                 window, "Η ενημέρωση δεν ξεκίνησε",
                 "Δεν ήταν δυνατή η εκκίνηση της εγκατάστασης.\n\n"
