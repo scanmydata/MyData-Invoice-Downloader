@@ -153,12 +153,21 @@ def build_updater_script(
     # καταγράφεται με ώρα, οπότε το πρόβλημα είναι πάντα ορατό.
     run_log = setup.with_name("timologio_update_run.log")
     proc_name = app_exe.stem
-    dir_arg = f"'/DIR={esc(install_dir)}'," if install_dir is not None else ""
+    # ΚΡΙΣΙΜΟ — διπλά εισαγωγικά γύρω από ΚΑΘΕ διαδρομή: το
+    # `Start-Process -ArgumentList @('a','b c')` του Windows PowerShell 5.1 ΔΕΝ
+    # βάζει εισαγωγικά στα στοιχεία του πίνακα — τα ενώνει με κενά. Έτσι ένα
+    # `/DATADIR=C:\...\Παραστατικά myDATA` έσπαγε στο κενό: ο installer έβλεπε
+    # `/DATADIR=C:\...\Παραστατικά`, έφτιαχνε ΝΕΟ άδειο φάκελο «Παραστατικά» και
+    # έγραφε εκεί το μητρώο — η εφαρμογή άνοιγε σε άδεια βάση («έφτιαξε νέο
+    # φάκελο μόνο του»). Με τα `"..."` μέσα στο ίδιο το όρισμα, το setup.exe
+    # δέχεται τη διαδρομή ΟΛΟΚΛΗΡΗ (ο Inno αφαιρεί τα εισαγωγικά). Ισχύει για
+    # όποια διαδρομή μπορεί να έχει κενό ή ελληνικά: /DIR, /LOG, /DATADIR.
+    dir_arg = f"'/DIR=\"{esc(install_dir)}\"'," if install_dir is not None else ""
     args = (
         f"'/SILENT','/SUPPRESSMSGBOXES','/NORESTART',"
         f"{dir_arg}"
-        f"'/LOG={esc(log_path)}',"
-        f"'/DATADIR={esc(data_dir)}',"
+        f"'/LOG=\"{esc(log_path)}\"',"
+        f"'/DATADIR=\"{esc(data_dir)}\"',"
         f"'/ROLE={role}','{tray_flag}'"
     )
     return (

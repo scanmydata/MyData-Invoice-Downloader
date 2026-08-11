@@ -182,8 +182,13 @@ def test_updater_script_waits_installs_relaunches():
     assert "Παραστατικά myDATA" in script
     assert "/SILENT" in script
     # ΚΡΙΣΙΜΟ: ρητό /DIR στον φάκελο που τρέχει η εφαρμογή — αλλιώς η νέα έκδοση
-    # μπορεί να εγκατασταθεί αλλού και το relaunch να ανοίξει την παλιά.
-    assert r"/DIR=C:\Programs\App" in script
+    # μπορεί να εγκατασταθεί αλλού και το relaunch να ανοίξει την παλιά. ΚΑΙ σε
+    # διπλά εισαγωγικά: κάθε διαδρομή με πιθανό κενό (εδώ «Παραστατικά myDATA»)
+    # πρέπει να περνά μέσα σε "...", αλλιώς το Start-Process την σπάει στο κενό
+    # και ο installer φτιάχνει νέο, άδειο φάκελο δεδομένων.
+    assert r'/DIR="C:\Programs\App"' in script
+    assert '/DATADIR="C:\\Users\\x\\Documents\\Παραστατικά myDATA"' in script
+    assert '/LOG="' in script
     # Κλείνει κάθε instance πριν την εγκατάσταση· τα κλειδωμένα αρχεία τα
     # αναλαμβάνει πλέον ο Restart Manager του installer (CloseApplications στο
     # .iss), όχι εύθραυστη χειροκίνητη αναμονή ξεκλειδώματος.

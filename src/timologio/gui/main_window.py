@@ -128,11 +128,26 @@ class MainWindow(QMainWindow):
         # ώστε ο χρήστης να δει το πρόγραμμα αντί να «εξαφανιστεί» στο tray.
         self._force_show = force_show
         self.setWindowTitle("Λήψη Παραστατικών myDATA")
-        self.resize(1340, 840)
-        # Κάτω από αυτό, ο πίνακας πελατών (9 στήλες) και η ανάλυση δεν χωρούν
-        # μαζί και εμφανίζεται οριζόντια μπάρα. Όποιος έχει μικρότερη οθόνη
-        # μαζεύει το πλαϊνό μενού και κερδίζει 142 pixel.
-        self.setMinimumSize(1206, 700)
+        # Αρχικό ΚΑΙ ελάχιστο μέγεθος, πάντα ΜΕΣΑ στα όρια της οθόνης. Το σταθερό
+        # 1340×840 ξεπερνούσε το ύψος σε φορητούς/μικρές αναλύσεις: η γραμμή
+        # κατάστασης και το κάτω μέρος του πλαϊνού μενού έβγαιναν κάτω από την
+        # μπάρα εργασιών, κι έτσι «όλα φαίνονταν σωστά μόνο σε full-screen». Τώρα
+        # κλείνουμε το μέγεθος στη διαθέσιμη περιοχή και κεντράρουμε το παράθυρο.
+        # Το ελάχιστο (1206×700: κάτω από αυτό μπλέκουν πίνακας+ανάλυση) δεν
+        # ξεπερνά ΠΟΤΕ την οθόνη· σε πολύ μικρές οθόνες εμφανίζεται μπάρα κύλισης
+        # μέσα στον πίνακα — ανεκτό, το κάτω μέρος μένει πάντα ορατό.
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            self.setMinimumSize(min(1206, avail.width()), min(700, avail.height()))
+            w = min(1340, avail.width())
+            h = min(840, avail.height())
+            self.resize(w, h)
+            self.move(avail.x() + (avail.width() - w) // 2,
+                      avail.y() + (avail.height() - h) // 2)
+        else:
+            self.resize(1340, 840)
+            self.setMinimumSize(1206, 700)
 
         self.settings = load_settings()
         self._role = load_role()

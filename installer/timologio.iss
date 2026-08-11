@@ -7,7 +7,7 @@
 ; Build:  "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installer\timologio.iss
 
 #define AppName        "Timologio Downloader"
-#define AppVersion     "0.2.26"
+#define AppVersion     "0.2.27"
 #define AppPublisher   "scanmydata"
 #define AppExeName     "TimologioDownloader.exe"
 
@@ -16,7 +16,11 @@ AppId={{8F3A6C21-4E9B-4A7D-9C15-7E2B4D8A1F03}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-DefaultDirName={localappdata}\Programs\TimologioDownloader
+; Ο προεπιλεγμένος φάκελος είναι ο ΗΔΗ εγκατεστημένος (αν υπάρχει), διαβασμένος
+; από το μητρώο — έτσι μια ενημέρωση/επανεγκατάσταση πέφτει πάντα πάνω στην
+; υπάρχουσα εγκατάσταση κι όχι σε νέο φάκελο. Η αυτόματη ενημέρωση περνά ούτως ή
+; άλλως ρητό /DIR (που υπερισχύει)· αυτό καλύπτει και τη χειροκίνητη εκτέλεση.
+DefaultDirName={code:GetInstallDir}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -299,6 +303,20 @@ end;
 function GetDataDir(Param: String): String;
 begin
   Result := DataDirPage.Values[0];
+end;
+
+// Ο φάκελος εγκατάστασης της προηγούμενης έκδοσης (το γράφουμε ως InstallDir σε
+// κάθε εγκατάσταση). Αν λείπει (πρώτη εγκατάσταση), πέφτουμε στον προεπιλεγμένο.
+// Χρησιμοποιείται ως DefaultDirName, ώστε μια ενημέρωση να μη φτιάχνει νέο φάκελο.
+function GetInstallDir(Param: String): String;
+var
+  V: String;
+begin
+  if RegQueryStringValue(HKCU, 'Software\scanmydata\TimologioDownloader',
+                         'InstallDir', V) and (V <> '') then
+    Result := V
+  else
+    Result := ExpandConstant('{localappdata}\Programs\TimologioDownloader');
 end;
 
 function GetRole(Param: String): String;

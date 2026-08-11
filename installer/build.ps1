@@ -32,6 +32,47 @@ if ($uv) {
 
 $env:PYTHONPATH = Join-Path $root "src"
 
+# --- Ψηφιακή υπογραφή (προαιρετική) ------------------------------------------
+# Το exe και το setup.exe φέρουν ήδη πλήρη VersionInfo (εκδότης «scanmydata»),
+# που μειώνει τα ψευδώς-θετικά. Ωστόσο, χωρίς ψηφιακή υπογραφή (Authenticode) το
+# SmartScreen δείχνει πάντα «άγνωστος εκδότης». Η υπογραφή θέλει πιστοποιητικό
+# code-signing. Αν οριστεί (μέσω μεταβλητών περιβάλλοντος), υπογράφουμε ΚΑΙ το
+# exe ΚΑΙ το setup.exe· αλλιώς το βήμα παραλείπεται σιωπηλά. Έτσι το build είναι
+# «universal»: μόλις αποκτηθεί πιστοποιητικό, η υπογραφή γίνεται αυτόματα.
+#   $env:TIMOLOGIO_SIGN_PFX  = 'C:\path\cert.pfx'; $env:TIMOLOGIO_SIGN_PASS='...'
+#   -ή- $env:TIMOLOGIO_SIGN_SHA1 = '<thumbprint πιστοποιητικού στο store>'
+function Find-SignTool {
+    $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $roots = @("${env:ProgramFiles(x86)}\Windows Kits\10\bin",
+               "$env:ProgramFiles\Windows Kits\10\bin")
+    foreach ($r in $roots) {
+        if (Test-Path $r) {
+            $exe = Get-ChildItem -Path $r -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match '\\x64\\' } |
+                Sort-Object FullName -Descending | Select-Object -First 1
+            if ($exe) { return $exe.FullName }
+        }
+    }
+    return $null
+}
+
+function Invoke-Sign($file) {
+    $pfx  = $env:TIMOLOGIO_SIGN_PFX
+    $sha1 = $env:TIMOLOGIO_SIGN_SHA1
+    if (-not $pfx -and -not $sha1) { return }   # δεν ρυθμίστηκε υπογραφή — σιωπηλή παράλειψη
+    $st = Find-SignTool
+    if (-not $st) { throw "Ζητήθηκε υπογραφή αλλά δεν βρέθηκε το signtool.exe (Windows SDK)." }
+    $ts = 'http://timestamp.digicert.com'
+    if ($pfx) {
+        & $st sign /fd SHA256 /f $pfx /p $env:TIMOLOGIO_SIGN_PASS /tr $ts /td SHA256 $file
+    } else {
+        & $st sign /fd SHA256 /sha1 $sha1 /tr $ts /td SHA256 $file
+    }
+    if ($LASTEXITCODE -ne 0) { throw "Η υπογραφή απέτυχε: $file" }
+    Write-Host "   υπογράφηκε: $file" -ForegroundColor Green
+}
+
 # --- Γραφικά -----------------------------------------------------------------
 # ΠΡΟΣΟΧΗ: χωρίς offscreen. Το offscreen backend δεν στοιχειοθετεί το <text> του
 # SVG και το λογότυπο βγαίνει σιωπηλά χωρίς τη λέξη «DATA».
@@ -65,6 +106,9 @@ Remove-Item "$root\dist\TimologioDownloader" -Recurse -Force -ErrorAction Silent
 if (-not (Test-Path "$root\dist\TimologioDownloader\TimologioDownloader.exe")) {
     throw "Το PyInstaller δεν παρήγαγε το exe."
 }
+# Υπογράφουμε το exe ΠΡΙΝ το πακετάρει ο Inno, ώστε το υπογεγραμμένο αρχείο να
+# μπει μέσα στο setup.
+Invoke-Sign "$root\dist\TimologioDownloader\TimologioDownloader.exe"
 
 # --- Inno Setup --------------------------------------------------------------
 Write-Host "== 5/5  Inno Setup ==" -ForegroundColor Cyan
@@ -87,6 +131,7 @@ if ($LASTEXITCODE -ne 0) { throw "Ο Inno Setup απέτυχε." }
 # και αλφαβητικά προηγούνται, οπότε το μήνυμα ανέφερε το λάθος αρχείο.
 $setup = Get-ChildItem "$root\dist\installer\*.exe" |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
+Invoke-Sign $setup.FullName
 Write-Host ""
 Write-Host "Έτοιμο: $($setup.FullName)" -ForegroundColor Green
 Write-Host "Μέγεθος: $([math]::Round($setup.Length/1MB,1)) MB"

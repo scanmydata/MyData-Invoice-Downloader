@@ -43,6 +43,29 @@ scheduled task τρέχει έξω από το job και επιβιώνει π�
   `/DATADIR`, `/ROLE`, `/TRAY`· ο installer προ-συμπληρώνει και από το μητρώο
   (`PreselectFromExistingInstall`).
 
+**Παγίδα «έφτιαξε νέο φάκελο δεδομένων μόνο του» (0.2.27):** το
+`Start-Process -ArgumentList @('a','b c')` του **Windows PowerShell 5.1** ΔΕΝ
+βάζει εισαγωγικά στα στοιχεία του πίνακα — τα ενώνει με κενά. Έτσι το
+`/DATADIR=C:\...\Παραστατικά myDATA` έσπαγε στο κενό: ο installer έβλεπε
+`/DATADIR=C:\...\Παραστατικά`, έφτιαχνε ΝΕΟ άδειο φάκελο και έγραφε εκεί το
+μητρώο → η εφαρμογή άνοιγε σε άδεια βάση. **Λύση:** διπλά εισαγωγικά ΜΕΣΑ στο
+ίδιο το όρισμα για ΚΑΘΕ διαδρομή (`/DIR="..."`, `/LOG="..."`,
+`/DATADIR="..."`) στο `build_updater_script` — το `CommandLineToArgvW` του
+setup.exe τα δέχεται ολόκληρα (ο Inno αφαιρεί τα εισαγωγικά). Επιπλέον, ο
+προεπιλεγμένος φάκελος εγκατάστασης διαβάζεται από το μητρώο
+(`DefaultDirName={code:GetInstallDir}`), ώστε ακόμη και χειροκίνητη
+επανεγκατάσταση χωρίς `/DIR` να πέφτει πάνω στην υπάρχουσα.
+
+**Στοιχεία εκδότη / SmartScreen:** exe (PyInstaller `version_info`) και setup.exe
+(Inno `VersionInfo*`) φέρουν ήδη πλήρη VersionInfo («scanmydata»). Το SmartScreen
+θέλει ΨΗΦΙΑΚΗ ΥΠΟΓΡΑΦΗ (Authenticode) — χρειάζεται πιστοποιητικό code-signing.
+Το `build.ps1` υπογράφει αυτόματα ΑΝ οριστεί (`TIMOLOGIO_SIGN_PFX`+`_PASS` ή
+`TIMOLOGIO_SIGN_SHA1`)· αλλιώς παραλείπει σιωπηλά.
+
+**Μέγεθος παραθύρου:** το αρχικό/ελάχιστο μέγεθος κλείνεται πάντα στη διαθέσιμη
+οθόνη (`main_window` `screen().availableGeometry()`) — αλλιώς σε φορητούς η
+γραμμή κατάστασης έβγαινε κάτω από την μπάρα εργασιών («σωστά μόνο σε full-screen»).
+
 **Διάγνωση αποτυχίας — 2 logs στο `%TEMP%`:**
 - `timologio_update_run.log` — τα βήματα του δικού μας script (start → instances
   stopped → running installer → installer exit=N → relaunched). Πού σταμάτησε =
