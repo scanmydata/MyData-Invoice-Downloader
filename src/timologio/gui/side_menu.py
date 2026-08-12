@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -21,11 +23,13 @@ from .icons import icon, logo_pixmap
 from .theme import CURRENT
 from .widgets import ToggleSwitch
 
-# Το WIDE δεν είναι στρογγυλός αριθμός για την ομορφιά: στα 200 ο υπότιτλος
-# «Λήψη Παραστατικών» ζητούσε 96px σε κουτί 94px και κοβόταν το τελευταίο
-# γράμμα. Τα 226 αφήνουν ~12px περιθώριο, ώστε να αντέχει και μεγαλύτερη
-# γραμματοσειρά συστήματος ή άλλη κλίμακα οθόνης.
-WIDE, NARROW = 226, 58
+# Το NARROW είναι η μαζεμένη λωρίδα (μόνο εικονίδια). Το ΑΝΟΙΧΤΟ πλάτος ΔΕΝ είναι
+# πλέον καρφωτό: υπολογίζεται από το περιεχόμενο (γραμματοσειρά, κλίμακα οθόνης,
+# εικονίδια) στο _fit_width_to_contents. Με καρφωτά 226px (206px καθαρό) οι
+# μακριές ελληνικές ετικέτες κόβονταν — π.χ. «Αντίγραφο ασφαλείας» θέλει 289px —
+# και χειρότερα σε μεγαλύτερη γραμματοσειρά συστήματος. Το WIDE_FLOOR είναι απλώς
+# κατώφλι, ώστε με μικρή γραμματοσειρά το μενού να μη γίνεται αδικαιολόγητα στενό.
+WIDE_FLOOR, NARROW = 226, 58
 
 
 #: Εικονίδιο ανά ενέργεια, όπου το όνομα της ενέργειας δεν είναι και όνομα
@@ -95,10 +99,37 @@ class SideMenu(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("sideMenu")
-        self.setFixedWidth(WIDE)
         self._collapsed = False
+        # Ο κάθετος scrollbar «τρώει» πλάτος όταν εμφανίζεται· το κρατάμε ρητά στο
+        # πλάτος ώστε η μακρύτερη ετικέτα να μη χάνεται από κάτω του.
+        self._sb_extent = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        # Προσωρινά — τα πραγματικά υπολογίζονται στο τέλος (_fit_width_to_contents).
+        self._content_width = WIDE_FLOOR
+        self._wide = WIDE_FLOOR + self._sb_extent
+        self.setFixedWidth(self._wide)
 
-        layout = QVBoxLayout(self)
+        # Το εξωτερικό layout κρατά ΜΟΝΟ την περιοχή κύλισης: όταν το μενού δεν
+        # χωρά σε ύψος (μικρή/χαμηλή οθόνη), κυλά αντί να συμπιέζεται — αλλιώς το
+        # Qt έσφιγγε τις αποστάσεις και έκοβε π.χ. το λογότυπο της κεφαλίδας. Σε
+        # ψηλή οθόνη το widgetResizable απλώνει το περιεχόμενο, οπότε το κάτω
+        # μπλοκ (ΡΥΘΜΙΣΕΙΣ + υποσέλιδο) μένει καρφωμένο κάτω, όπως πριν.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("menuScroll")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        outer.addWidget(self._scroll)
+
+        content = QWidget()
+        content.setObjectName("menuContent")
+        self._scroll.setWidget(content)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(4)
         self._layout = layout
@@ -185,7 +216,32 @@ class SideMenu(QWidget):
         layout.addSpacing(8)
         layout.addWidget(self._footer())
 
+        # Το πλάτος προσαρμόζεται στο περιεχόμενο ΑΦΟΥ υπάρχουν όλα τα widgets.
+        self._fit_width_to_contents()
+
     # ------------------------------------------------------------------ UI
+    def _fit_width_to_contents(self) -> None:
+        """Υπολογίζει το ανοιχτό πλάτος από το ΠΕΡΙΕΧΟΜΕΝΟ, όχι καρφωτά.
+
+        Το ``sizeHint`` κάθε widget περιλαμβάνει εικονίδιο, κείμενο (με τη σωστή
+        γραμματοσειρά) και το padding του stylesheet· έτσι το
+        ``layout().sizeHint()`` δίνει ακριβώς το πλάτος ώστε καμία ετικέτα να μην
+        κόβεται — ακόμη και σε μεγαλύτερη γραμματοσειρά ή κλίμακα οθόνης, όπου το
+        παλιό καρφωτό 226px έκοβε 12 ετικέτες (η χειρότερη ζητούσε 289px)."""
+        self.ensurePolished()
+        for child in self.findChildren(QWidget):
+            child.ensurePolished()
+        self._layout.activate()
+        natural = self._layout.sizeHint().width()
+        # Κατώφλι για μικρή γραμματοσειρά· γενναίο ταβάνι μόνο ως δικλείδα σε
+        # περίπτωση χαλασμένης μέτρησης γραμματοσειράς.
+        self._content_width = max(WIDE_FLOOR, min(natural, 600))
+        # +scrollbar: όταν το μενού κυλά, ο scrollbar δεν πρέπει να κρύβει τη
+        # μακρύτερη ετικέτα — του κρατάμε τη λωρίδα του.
+        self._wide = self._content_width + self._sb_extent
+        if not self._collapsed:
+            self.setFixedWidth(self._wide)
+
     def _header(self) -> QWidget:
         holder = QWidget()
         # Όταν το μενού δεν χωρά σε ύψος, το Qt συμπιέζει ό,τι μπορεί. Η
@@ -290,7 +346,7 @@ class SideMenu(QWidget):
         self._layout.setContentsMargins(*((8, 10, 8, 10) if collapsed
                                           else (10, 10, 10, 10)))
 
-        target = NARROW if collapsed else WIDE
+        target = NARROW if collapsed else self._wide
         if not animate:
             self.setFixedWidth(target)
         else:

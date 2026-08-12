@@ -83,6 +83,27 @@ def test_menu_icons_repaint_on_theme_change(app) -> None:
     assert dark != light, "το εικονίδιο έμεινε βαμμένο στο χρώμα του σκούρου θέματος"
 
 
+def test_menu_labels_are_not_clipped(app) -> None:
+    """Το πλάτος του μενού υπολογίζεται από τη γραμματοσειρά, όχι καρφωτά: καμία
+    ετικέτα δεν πρέπει να κόβεται. Με το παλιό καρφωτό 226px (206px καθαρό)
+    κόβονταν 12 ετικέτες — η χειρότερη («Αντίγραφο ασφαλείας») ήθελε 289px."""
+    from timologio.gui.side_menu import SideMenu
+    from timologio.gui.theme import apply_theme
+
+    apply_theme(app, "dark")
+    menu = SideMenu()
+    margins = menu._layout.contentsMargins()
+    # Χειρότερη περίπτωση: όταν εμφανίζεται ο scrollbar, το ωφέλιμο πλάτος είναι
+    # _content_width (χωρίς τη λωρίδα του scrollbar) μείον τα περιθώρια.
+    avail = menu._content_width - (margins.left() + margins.right())
+    for button in menu._buttons.values():
+        need = button.sizeHint().width()
+        assert need <= avail, f"κόβεται η ετικέτα {button._label!r}: {need}px > {avail}px"
+    # Οι διακόπτες και η έκδοση στο κάτω μέρος μετρούν κι αυτοί.
+    for widget in (menu.chk_light, menu.chk_tooltips, menu.version):
+        assert widget.sizeHint().width() <= avail
+
+
 def test_toggle_knob_follows_blocked_setChecked(app) -> None:
     """Η εκκίνηση θυμάται το θέμα με blockSignals — η μπίλια πρέπει να ακολουθεί.
 

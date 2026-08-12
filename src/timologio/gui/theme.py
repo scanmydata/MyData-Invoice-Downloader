@@ -336,6 +336,12 @@ QMenu::separator {{ height: 1px; background: {p.line}; margin: 4px 8px; }}
 
 /* ---------- Πλαϊνό μενού ---------- */
 QWidget#sideMenu {{ background: {p.menu_bg}; border-right: 1px solid {p.line}; }}
+/* Η περιοχή κύλισης του μενού (και το viewport της) διαφανής, ώστε να φαίνεται
+   το φόντο του #sideMenu· αλλιώς έβγαινε ένα αταίριαστο ορθογώνιο. */
+QScrollArea#menuScroll, QScrollArea#menuScroll > QWidget {{
+    background: transparent; border: none;
+}}
+QWidget#menuContent {{ background: transparent; }}
 QLabel#menuTitle {{ font-size: 17px; font-weight: 800; color: {p.accent}; }}
 QLabel#menuSubtitle {{ font-size: 10px; color: {p.muted}; }}
 QLabel#menuSection {{
